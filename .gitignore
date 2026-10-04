@@ -1,0 +1,6 @@
+node_modules/
+dist/
+artifacts/
+*.blend1
+__pycache__/
+.DS_Store

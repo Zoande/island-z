@@ -1,0 +1,11 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { common, sceneShader,sceneryShader,impostorBakeShader, waterShader, skyShader, postShader } from '../client/shaders';
+import {impostorShader} from '../client/impostors';
+import { WorldGenerator } from '../shared/world';
+mkdirSync('artifacts',{recursive:true});
+writeFileSync('artifacts/shaders.json',JSON.stringify({sceneShader,sceneryShader,impostorShader,impostorBakeShader,waterShader,skyShader,postShader}));
+const world=new WorldGenerator({seed:'island-z',islandSizeMeters:30720});
+console.log(JSON.stringify(world.water.metadataSize));
+writeFileSync('artifacts/water-network.json',JSON.stringify({lakes:world.water.lakes,rivers:world.water.rivers}));
+const points=Array.from({length:64},(_,i)=>[(i*7919%30720)-15360,(i*10429%30720)-15360]);
+writeFileSync('artifacts/coast-validation.json',JSON.stringify({common,seed:world.seed,size:world.config.islandSizeMeters,points,expected:points.map(([x,z])=>world.coastDistance(x,z))}));

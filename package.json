@@ -1,0 +1,31 @@
+{
+  "name": "island-z",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "server": "tsx watch server/index.ts",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "benchmark:terrain": "tsx scripts/terrain-benchmark.ts",
+    "profile": "tsx scripts/profile-browser.ts",
+    "assets:trees": "python scripts/build_trees.py",
+    "assets:bushes": "python scripts/build_bushes.py",
+    "assets:palms": "python scripts/build_palms.py",
+    "assets:materials": "python scripts/build_materials.py"
+  },
+  "dependencies": {
+    "gl-matrix": "^3.4.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@webgpu/types": "^0.1.69",
+    "playwright": "^1.55.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  }
+}
