@@ -96,7 +96,7 @@ async function start() {
         const player=c.character;
         if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;get('respawn-note').textContent='Out of oxygen — returned to shore';}
         if(now>noteUntil)get('respawn-note').textContent='';
-        get('oxygen').setAttribute('aria-valuenow',player.oxygen.toFixed(1));get('oxygen-time').textContent=`${Math.ceil(player.oxygen)}s`;
+        get('oxygen').setAttribute('aria-valuenow',player.oxygen.toFixed(1));get('oxygen-time').textContent=`${Math.ceil(player.oxygen/(player.underwater?player.oxygenDrainRate:1))}s`;
         document.querySelectorAll<HTMLElement>('.bubble').forEach((bubble,i)=>bubble.style.setProperty('--fill',String(Math.max(0,Math.min(1,player.oxygen/10-i)))));
         get('stamina').style.setProperty('--fill',String(player.stamina/100));get('stamina').setAttribute('aria-valuenow',player.stamina.toFixed(1));
         get('stamina-state').textContent=player.exhausted?'Exhausted':player.swimming?'Swimming':'';

@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {Character,CHARACTER,characterInput,idleInput,type CharacterEnvironment,type CharacterInput} from '../shared/character';
+import {Character,CHARACTER,characterInput,idleInput,type CharacterEnvironment,type CharacterInput,type CharacterWater} from '../shared/character';
 import {WorldGenerator} from '../shared/world';
 import {selectTiles,playerPriority} from '../client/streaming';
 const flat:CharacterEnvironment={surface:()=>({height:0,normal:[0,1,0]}),colliders:()=>[]};
@@ -51,6 +51,22 @@ describe('movement and swimming',()=>{
     c.spawn(20,3,30);c.spawn(0,-10,0);loaded=false;c.update(59,idleInput);expect(c.oxygen).toBe(1);expect(c.respawns).toBe(0);
     c.update(1,idleInput);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([20,3,30]);expect(c.oxygen).toBe(60);expect(c.stamina).toBe(100);
   });
+  it('keeps freshwater and near-shore oxygen gentle, then increases offshore drowning risk without a boundary',()=>{
+    for(const [kind,distance,seconds]of [['lake',2000,60],['river',2000,60],['ocean',0,60],['ocean',50,60],['ocean',400,30],['ocean',750,12],['ocean',1450,60/17]]as const) {
+      const c=new Character({...ocean,surface:()=>null,water:()=>({level:0,kind,offshoreMeters:distance})});c.spawn(0,3,0);c.spawn(0,-10,0);
+      c.update(seconds-.01,idleInput);expect(c.respawns).toBe(0);expect(c.oxygen).toBeGreaterThan(0);
+      c.update(.02,idleInput);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([0,3,0]);expect(c.oxygenDrainRate).toBe(1);
+    }
+  });
+  it('updates drain when returning to shore or freshwater and keeps surface breathing and frame rates consistent',()=>{
+    let water:CharacterWater={level:0,kind:'ocean',offshoreMeters:750};
+    const environment={...ocean,water:()=>water};
+    for(const fps of [15,60,144]){const c=swimmer(environment);c.oxygen=60;advance(c,2,idleInput,fps);expect(c.oxygen).toBeCloseTo(50,8);}
+    const c=swimmer({...environment,surface:()=>null});c.oxygen=40;c.update(1,idleInput);expect(c.oxygen).toBe(35);
+    water={...water,offshoreMeters:25};c.update(1,idleInput);expect(c.oxygen).toBe(34);
+    water={...water,kind:'lake',offshoreMeters:2000};c.update(1,idleInput);expect(c.oxygen).toBe(33);
+    water={...water,kind:'ocean',offshoreMeters:2000};c.feet[1]=0;c.update(1,idleInput);expect(c.oxygen).toBe(43);expect(c.respawns).toBe(0);
+  });
   it('drains during acceleration, sprinting and swimming, and only recovers with gentle walking or water idling',()=>{
     const c=new Character(flat);c.spawn(0,0,0);c.stamina=50;
     advance(c,.1,input(['KeyW']));expect(c.stamina).toBeLessThan(50);
@@ -76,7 +92,7 @@ describe('underwater world',()=>{
   it('gets deeper beyond the shelf and streams offshore without growing the retained selection',()=>{
     const distances=[16000,18000,25000,40000],depths=distances.map(x=>world.height(x,0));
     for(let i=1;i<depths.length;i++)expect(depths[i]).toBeLessThan(depths[i-1]);expect(depths.at(-1)).toBeLessThan(-1000);
-    for(const x of [18000,40000,100000]){const roots=selectTiles(x,0,30720,6500);expect(playerPriority(roots,x,0).size).toBeLessThan(180);expect(playerPriority(roots,x,0).has(`${Math.floor(x/64)*64}:0:0`)).toBe(true);expect(world.surfaceWater(x,0)).toEqual({level:0,kind:'ocean'});}
+    for(const x of [18000,40000,100000]){const roots=selectTiles(x,0,30720,6500);expect(playerPriority(roots,x,0).size).toBeLessThan(180);expect(playerPriority(roots,x,0).has(`${Math.floor(x/64)*64}:0:0`)).toBe(true);expect(world.surfaceWater(x,0)).toEqual({level:0,kind:'ocean',offshoreMeters:-world.coastDistance(x,0)});}
   });
   it('places deterministic algae on submerged shallow beds, excluding distant scenery',()=>{
     const lake=world.water.lakes[0],x=Math.floor(lake.x/64)*64,z=Math.floor(lake.z/64)*64;

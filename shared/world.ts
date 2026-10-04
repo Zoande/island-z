@@ -50,7 +50,8 @@ export class WorldGenerator {
       const ground=this.terrainHeight(x,z),bed=ground+(Math.min(ground,water.bed)-ground)*water.bank;
       if(bed<water.level-.02)return {level:water.level,kind:water.kind};
     }
-    if(this.coastDistance(x,z)<0)return {level:time===undefined?0:oceanWaveHeight(x,z,time),kind:'ocean'};
+    const inland=this.coastDistance(x,z);
+    if(inland<0)return {level:time===undefined?0:oceanWaveHeight(x,z,time),kind:'ocean',offshoreMeters:-inland};
     return null;
   }
   terrainHeight(x: number, z: number): number {

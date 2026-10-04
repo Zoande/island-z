@@ -46,8 +46,12 @@ their edges. Decorative pebbles and algae remain non-solid. Swimming uses the
 same terrain, rock and trunk collisions, with a 3.2 m/s movement limit. Shallow
 water supports wading and sloped shores let you walk back out.
 
-The lower-right oxygen bubbles give **60 seconds underwater**. Breathing air
-restores oxygen; running out returns you to the original game spawn with full
+The lower-right oxygen bubbles give **60 seconds underwater** in lakes, rivers,
+and within 50 meters of the ocean shoreline. Beyond that shoreline buffer,
+oxygen drains progressively faster: a full reserve lasts about 30 seconds at
+400 meters offshore, 12 seconds at 750 meters, and continues falling farther out.
+The timer estimates remaining breath at your current drain rate; the bubbles
+show your reserve. Breathing air restores oxygen; running out returns you to the original game spawn with full
 oxygen and stamina. Stamina does not recover during acceleration, sprinting or
 active swimming. Gentle walking and water idling restore it slowly. A full bar
 allows about nine minutes of continuous lake swimming or nearly five minutes in

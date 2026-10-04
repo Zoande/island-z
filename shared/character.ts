@@ -2,7 +2,7 @@ import type { MeshSurface } from './placement';
 import {rockSurface,type RockCollisionShape} from './rock-collision';
 import {wallContains,wallPush,wallSweep} from './wall-collision';
 export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boolean;swimVector?:[number,number,number] }
-export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river'}
+export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river';offshoreMeters?:number}
 export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
 export interface CharacterEnvironment {
   surface(x:number,z:number):MeshSurface|null;
@@ -12,6 +12,7 @@ export interface CharacterEnvironment {
 export const CHARACTER = { radius:.32, height:2.16, eyeHeight:1.64*1.2, walkSpeed:4.5*1.15, sprintSpeed:7*1.15*1.3,
   runAcceleration:4.5,swimSpeed:3.2,swimUpSpeed:1.8,swimDownSpeed:2.4,idleSinkSpeed:.12,exhaustedSinkSpeed:.75,
   oxygenSeconds:60,staminaCapacity:100,swimDrain:.18,oceanSwimDrain:.35,sprintDrain:.8,accelerationDrain:1.2,walkRecovery:.55,waterRecovery:.5,
+  oceanOxygenGraceMeters:50,oceanOxygenRampMeters:350,
   gravity:22, jumpSpeed:4.8*Math.sqrt(1.3), jumpCost:4, stepHeight:.28, snapDistance:.3, slopeCos:Math.cos(48*Math.PI/180), timestep:1/120 };
 export const idleInput:CharacterInput={x:0,z:0,sprint:false,jump:false};
 /** Land movement stays horizontal; swimming follows look pitch. */
@@ -28,7 +29,7 @@ export class Character {
   readonly velocity=new Float64Array(3);
   grounded=false; inBush=false; ready=false;
   swimming=false;underwater=false;sprinting=false;accelerating=false;exhausted=false;
-  oxygen=CHARACTER.oxygenSeconds;stamina=CHARACTER.staminaCapacity;waterLevel:number|null=null;respawns=0;
+  oxygen=CHARACTER.oxygenSeconds;oxygenDrainRate=1;stamina=CHARACTER.staminaCapacity;waterLevel:number|null=null;respawns=0;
   private home?:[number,number,number];private swimActive=false;private waterKind:CharacterWater['kind']='ocean';
   private accumulator=0;private jumpHeld=false;private jumpBuffer=0;private coyote=0;
   constructor(readonly environment:CharacterEnvironment) {}
@@ -36,7 +37,7 @@ export class Character {
     this.home??=[x,y,z];
     this.feet.set([x,y,z]);this.velocity.fill(0);this.ready=false;this.grounded=false;
     this.swimming=false;this.underwater=false;this.sprinting=false;this.accelerating=false;this.exhausted=false;this.swimActive=false;
-    this.oxygen=CHARACTER.oxygenSeconds;this.stamina=CHARACTER.staminaCapacity;this.waterLevel=null;
+    this.oxygen=CHARACTER.oxygenSeconds;this.oxygenDrainRate=1;this.stamina=CHARACTER.staminaCapacity;this.waterLevel=null;
     this.accumulator=0;this.jumpHeld=false;this.jumpBuffer=0;this.coyote=0;
   }
   private support(x:number,z:number,colliders:readonly CharacterCollider[]=this.environment.colliders(x,z)):MeshSurface|null {
@@ -78,10 +79,14 @@ export class Character {
   private updateSubmersion() {
     const water=this.environment.water?.(this.feet[0],this.feet[2]);this.waterLevel=water?.level??null;
     this.underwater=!!water&&this.feet[1]+CHARACTER.eyeHeight<water.level-.04;
+    // A gentle shoreline buffer gives way to continuously increasing offshore
+    // risk. Freshwater retains the full one-minute underwater budget.
+    const distance=water?.offshoreMeters??0,offshore=Number.isFinite(distance)?Math.max(0,distance):0;
+    this.oxygenDrainRate=water?.kind==='ocean'?1+(Math.max(0,offshore-CHARACTER.oceanOxygenGraceMeters)/CHARACTER.oceanOxygenRampMeters)**2:1;
     if(water)this.waterKind=water.kind;
   }
   private updateVitals(dt:number,input:CharacterInput) {
-    this.oxygen=Math.max(0,Math.min(CHARACTER.oxygenSeconds,this.oxygen+(this.underwater?-dt:dt*10)));
+    this.oxygen=Math.max(0,Math.min(CHARACTER.oxygenSeconds,this.oxygen+(this.underwater?-dt*this.oxygenDrainRate:dt*10)));
     if(this.oxygen<=0&&this.home){this.respawns++;this.spawn(...this.home);return;}
     const exerting=this.swimming?this.swimActive:input.sprint&&Math.hypot(input.x,input.z)>.01||this.accelerating;
     const drain=this.swimming?(this.waterKind==='ocean'?CHARACTER.oceanSwimDrain:CHARACTER.swimDrain):this.sprinting?CHARACTER.sprintDrain:CHARACTER.accelerationDrain;
