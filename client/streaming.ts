@@ -5,7 +5,8 @@ export function selectTiles(x: number, z: number, size: number, distance: number
   const roots: TileNode[] = [], level = 7, extent = BASE_CHUNK * 2 ** level;
   const build = (tx: number, tz: number, l: number): TileNode | null => {
     const e = BASE_CHUNK * 2 ** l;
-    if (tx > size / 2 || tz > size / 2 || tx + e < -size / 2 || tz + e < -size / 2) return null;
+    // The island has finite bounds, but the surrounding seabed streams too.
+    // Working memory stays bounded by the camera's view radius offshore.
     const nearest = Math.hypot(Math.max(tx - x, 0, x - tx - e), Math.max(tz - z, 0, z - tz - e));
     if (nearest > distance) return null;
     const key = `${tx}:${tz}:${l}`;

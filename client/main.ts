@@ -20,9 +20,11 @@ app.innerHTML=`
     <div class="field"><label for="sun">Sun elevation <span id="sun-value">48°</span></label><input id="sun" type="range" min="12" max="80" value="48" aria-label="Sun elevation"/></div>
     <div class="meta-row field"><label for="quality">Render quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
     <p id="quality-description" class="setting-note">${qualityDescriptions.medium}</p>
-    <div class="controls"><span><kbd>W A S D</kbd>Move</span><span><kbd>SPACE</kbd>Jump</span><span><kbd>SHIFT</kbd>Sprint</span><span><kbd>MOUSE</kbd>Look</span><span><kbd>ESC</kbd>Release mouse</span></div>
+    <div class="controls"><span><kbd>W A S D</kbd>Move / swim</span><span><kbd>SPACE</kbd>Jump / swim up</span><span><kbd>SHIFT</kbd>Sprint / dive</span><span><kbd>MOUSE</kbd>Look / steer</span><span><kbd>ESC</kbd>Release mouse</span></div>
     </div></section>
   <div class="caption"><div id="biome" class="biome">Coastal grassland</div></div>
+  <div class="vitals" aria-label="Player vitals"><div class="vital-label"><span>Oxygen</span><span id="oxygen-time">60s</span></div><div id="oxygen" class="oxygen" role="progressbar" aria-label="Oxygen" aria-valuemin="0" aria-valuemax="60">${Array.from({length:6},()=>'<i class="bubble"></i>').join('')}</div><div class="vital-label"><span>Stamina</span><span id="stamina-state"></span></div><div id="stamina" class="stamina" role="progressbar" aria-label="Stamina" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+  <div id="respawn-note" class="respawn-note" role="status"></div>
   <div class="play-hint">Click the landscape to explore</div><div class="reticle"></div>
   <div class="overlay" id="overlay"><div class="eyebrow">A world from a seed</div><h1 id="overlay-title">Finding the island</h1><p id="message">Connecting to the world server…</p><div class="loading-line" id="loading-line"></div><button id="retry" hidden>Retry</button></div>`;
 const get=(id:string)=>document.getElementById(id)!;
@@ -53,7 +55,7 @@ async function start() {
     renderer=new IslandRenderer(canvas,config,world);renderer.onFatal=fail;
     const r=renderer;
     if(new URLSearchParams(location.search).has('profile'))r.profiler.start();
-    camera=new PlayerCamera(canvas,{surface:(x,z)=>r.collisionSurface(x,z),colliders:(x,z)=>r.playerColliders(x,z)});
+    camera=new PlayerCamera(canvas,{surface:(x,z)=>r.collisionSurface(x,z),colliders:(x,z)=>r.playerColliders(x,z),water:(x,z)=>world.surfaceWater(x,z,performance.now()/1000)});
     // Start at a dry, gentle coast, with room around nearby trunks and shrubs.
     const spawnX=config.islandSizeMeters*.08;
     let inner=0,outer=config.islandSizeMeters*.5;
@@ -77,16 +79,24 @@ async function start() {
     get('status').textContent='Preparing';progress('Preparing the shoreline…');
     const c=camera,s=stream;
     if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,perf:r.profiler,get failed(){return failed;}};
-    let last=performance.now(),lastStream=-Infinity,lastUI=0,fps=0;
+    let last=performance.now(),lastStream=-Infinity,lastUI=0,fps=0,respawns=0,noteUntil=0;
     const frame=(now:number)=>{
       if(failed||currentAttempt!==attempt)return;
       try {
-        const interval=now-last,dt=Math.min(interval/1000,.1);last=now;r.profiler.begin(interval);
+        const interval=now-last,dt=interval/1000;last=now;r.profiler.begin(interval);
         let stage=r.profiler.mark();c.update(dt);r.profiler.endStage('player',stage);stage=r.profiler.mark();fps=fps*.9+1/Math.max(dt,.001)*.1;
         if(now-lastStream>350) {s.update(c.position[0],c.position[2],r.distance);lastStream=now;}
         r.profiler.endStage('streaming',stage);
         if(s.error)throw new Error(s.error);
         r.render(c,s,now/1000);
+        const player=c.character;
+        if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;get('respawn-note').textContent='Out of oxygen — returned to shore';}
+        if(now>noteUntil)get('respawn-note').textContent='';
+        get('oxygen').setAttribute('aria-valuenow',player.oxygen.toFixed(1));get('oxygen-time').textContent=`${Math.ceil(player.oxygen)}s`;
+        document.querySelectorAll<HTMLElement>('.bubble').forEach((bubble,i)=>bubble.style.setProperty('--fill',String(Math.max(0,Math.min(1,player.oxygen/10-i)))));
+        get('stamina').style.setProperty('--fill',String(player.stamina/100));get('stamina').setAttribute('aria-valuenow',player.stamina.toFixed(1));
+        get('stamina-state').textContent=player.exhausted?'Exhausted':player.swimming?'Swimming':'';
+        document.querySelector('.vitals')!.classList.toggle('low-oxygen',player.oxygen<15);
         if(c.character.ready&&!failed)overlay.classList.add('hidden');
         if(now-lastUI>300) {
           lastUI=now;get('status').textContent=c.character.ready?'Exploring':'Preparing';get('fps').textContent=`${Math.round(fps)} fps`;

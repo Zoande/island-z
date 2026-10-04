@@ -2,9 +2,11 @@ import type { WorldConfig } from './config';
 import { fbm, hash, noise, seedHash, smooth } from './noise';
 import { rockPoints, rockFootprintRadius } from './rocks';
 import { WaterNetwork } from './water';
+import type {CharacterWater} from './character';
+import {oceanWaveHeight} from './waves';
 /** Material order: sand, meadow, litter, bedrock, mud, gravel, moss, dry meadow. */
 export interface SurfaceSample { height: number; normal: [number, number, number]; forest: number; weights: [number, number, number, number, number, number, number, number] }
-export type PropKind = 'oak' | 'birch' | 'palm' | 'rock' | 'grass' | 'bush' | 'pebble';
+export type PropKind = 'oak' | 'birch' | 'palm' | 'rock' | 'grass' | 'bush' | 'pebble' | 'algae';
 export interface Prop { kind: PropKind; x: number; y: number; z: number; scale: number; rotation: number; variant: number; normal?: [number, number, number] }
 interface MountainRange { x: number; z: number; angle: number; length: number; width: number; height: number; salt: number }
 export class WorldGenerator {
@@ -42,10 +44,22 @@ export class WorldGenerator {
     const original = this.terrainHeight(x,z), water = this.water.sample(x,z,original);
     return water ? water.bed : original;
   }
+  surfaceWater(x:number,z:number,time?:number):CharacterWater|null {
+    const water=this.water.sample(x,z);
+    if(water) {
+      const ground=this.terrainHeight(x,z),bed=ground+(Math.min(ground,water.bed)-ground)*water.bank;
+      if(bed<water.level-.02)return {level:water.level,kind:water.kind};
+    }
+    if(this.coastDistance(x,z)<0)return {level:time===undefined?0:oceanWaveHeight(x,z,time),kind:'ocean'};
+    return null;
+  }
   terrainHeight(x: number, z: number): number {
     const inland = this.coastDistance(x, z), s = this.seed;
     const scale = this.featureScale, shelf = Math.max(.06, Math.min(1, scale));
-    if (inland < 0) return -28 * (1 - Math.exp(inland / (450 * shelf)));
+    if (inland < 0) {
+      const offshore=-inland;
+      return -28*(1-Math.exp(-offshore/(450*shelf)))-offshore*.055*smooth(100*shelf,900*shelf,offshore);
+    }
     // The coast is a long, shallow shelf, not a short ramp into a mountain mask.
     const beach = 5 * shelf * (1 - Math.exp(-inland / (110 * shelf)));
     const lowlandBlend = smooth(140 * shelf, 1050 * shelf, inland);
@@ -164,6 +178,20 @@ export class WorldGenerator {
     }
     return props;
   }
+  private algaeProps(x0:number,z0:number,extent:number):Prop[] {
+    const props:Prop[]=[],endX=x0+extent,endZ=z0+extent;
+      const spacing=8;
+      for(let cz=Math.floor(z0/spacing);cz<Math.ceil(endZ/spacing);cz++)for(let cx=Math.floor(x0/spacing);cx<Math.ceil(endX/spacing);cx++) {
+        if(hash(cx,cz,this.seed+651)>.3)continue;
+        const x=(cx+.1+hash(cx,cz,this.seed+652)*.8)*spacing,z=(cz+.1+hash(cx,cz,this.seed+653)*.8)*spacing;
+        if(x<x0||x>=endX||z<z0||z>=endZ)continue;
+        const height=this.height(x,z),water=this.surfaceWater(x,z);if(!water)continue;
+        const depth=water.level-height;if(depth<.8||depth>18||noise(x/35,z/35,this.seed+654)<.42)continue;
+        const surface=this.sample(x,z);if(surface.normal[1]<.8)continue;
+        props.push({kind:'algae',x,z,y:height-.04,scale:.55+hash(cx,cz,this.seed+655)*.65,rotation:hash(cx,cz,this.seed+656)*Math.PI*2,variant:0});
+      }
+    return props;
+  }
   props(x0: number, z0: number, extent: number, includeGrass = true): Prop[] {
     const props: Prop[] = [], endX = x0 + extent, endZ = z0 + extent;
     const trees = new Map<string, Prop | null>();
@@ -216,6 +244,7 @@ export class WorldGenerator {
     addCandidates('rock', 16, 201);
     addCandidates('bush', 9, 451);
     if (includeGrass) {
+      props.push(...this.algaeProps(x0,z0,extent));
       addCandidates('grass', 3.2, 301);
       // Sparse global patch owners scatter small angular stones without a visible grid.
       // Include a margin so patches crossing chunk boundaries keep identical ownership.

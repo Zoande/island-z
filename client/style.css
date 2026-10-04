@@ -28,7 +28,16 @@ input[type=range] { width: 100%; accent-color: #c0d0aa; height: 3px; margin: 12p
 select { background: #ffffff08; border: 1px solid #b4c5be32; border-radius: 4px; padding: 5px 8px; color: #dce5de; font-size: 10px; }
 .controls { margin-top: 19px; padding-top: 14px; border-top: 1px solid #bed2c321; display: grid; grid-template-columns: 1fr 1fr; gap: 9px; color: #a9bdb3; font-size: 10px; }
 kbd { color: #e6ece8; border: 1px solid #c7d6cf36; border-radius: 3px; padding: 1px 4px; font: 9px 'Space Mono', monospace; margin-right: 5px; }
-.caption { position: absolute; bottom: 32px; right: 32px; text-align: right; text-shadow: 0 2px 12px #12202b; }
+.caption { position: absolute; bottom: 151px; right: 32px; text-align: right; text-shadow: 0 2px 12px #12202b; }
+.vitals { position: absolute; bottom: 30px; right: 32px; width: 170px; color: #e7f4ef; text-shadow: 0 1px 5px #102126; }
+.vital-label { display: flex; justify-content: space-between; font-size: 9px; letter-spacing: 1px; margin: 9px 0 6px; }
+.oxygen { display: flex; justify-content: space-between; }
+.bubble { --fill: 1; position: relative; display: block; width: 19px; height: 19px; overflow: hidden; border: 1px solid #d1eff4b0; border-radius: 50%; background: #123d4c65; box-shadow: inset 2px 2px 5px #ffffff18; }
+.bubble::after { content: ''; position: absolute; bottom: 0; left: 0; width: 100%; height: calc(var(--fill) * 100%); background: #aedfebd9; transition: height .15s linear; }
+.stamina { --fill: 1; height: 6px; border-radius: 4px; background: #07191c90; border: 1px solid #c6d8c64d; overflow: hidden; }
+.stamina i { display: block; height: 100%; width: calc(var(--fill) * 100%); background: #bed2a9; }
+.low-oxygen .bubble::after { background: #e5b48c; }
+.respawn-note { position: absolute; top: 110px; left: 50%; transform: translateX(-50%); font-size: 12px; text-shadow: 0 1px 6px #102126; }
 .caption .biome { font-size: 22px; font-weight: 500; margin-top: 5px; }
 .play-hint { position: absolute; bottom: 35px; left: 50%; transform: translateX(-50%); font-size: 11px; padding: 10px 17px; border-radius: 30px; background: #10201b8c; backdrop-filter: blur(8px); white-space: nowrap; }
 .reticle { position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; border: 1px solid #ffffffba; border-radius: 50%; display: none; }
@@ -43,4 +52,4 @@ kbd { color: #e6ece8; border: 1px solid #c7d6cf36; border-radius: 3px; padding: 
 .loading-line { width: 150px; height: 2px; background: #b0c7b626; overflow: hidden; margin: 20px auto; }
 .loading-line::after { content: ''; display: block; width: 50%; height: 100%; background: #c3d5b8; animation: progress 1.5s ease-in-out infinite alternate; }
 @keyframes progress { from { transform: translateX(-100%); } to { transform: translateX(200%); } }
-@media(max-width: 650px) { .masthead { top: 18px; left: 18px; } .status-pill { top: 20px; right: 18px; } .panel { bottom: 18px; left: 18px; width: 258px; } .caption { right: 18px; bottom: 22px; } .play-hint { bottom: auto; top: 78px; } }
+@media(max-width: 650px) { .masthead { top: 18px; left: 18px; } .status-pill { top: 20px; right: 18px; } .panel { bottom: 18px; left: 18px; width: 210px; } .caption { right: 18px; bottom: 135px; } .vitals { right: 18px; bottom: 22px; width: 130px; } .play-hint { bottom: auto; top: 78px; } }

@@ -71,6 +71,7 @@ export class IslandRenderer {
   private context!: GPUCanvasContext;
   private format!: GPUTextureFormat;
   private uniform!: GPUBuffer;
+  private postUniform!:GPUBuffer;
   private uniformValues = new Float32Array(64);
   private frameGroup!: GPUBindGroup;
   private frameOnly!: GPUBindGroup;
@@ -131,7 +132,7 @@ export class IslandRenderer {
     sceneryInstances:this.visibleBatches.reduce((n,b)=>n+b.count,0),distantTreeInstances:[...this.farBatches.values()].reduce((n,b)=>n+b.count,0),shadowInstances:this.casterBatches.reduce((n,b)=>n+b.count,0),
     sceneSceneryTriangles:this.visibleBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),shadowSceneryTriangles:this.casterBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0) }; }
   get estimatedGpuBytes() {
-    const buffers=new Set<GPUBuffer>([this.uniform,this.farUniform,this.oceanInstance,...this.materialUniforms].filter(Boolean));
+    const buffers=new Set<GPUBuffer>([this.uniform,this.postUniform,this.farUniform,this.oceanInstance,...this.materialUniforms].filter(Boolean));
     const add=(mesh?:Mesh)=>{if(mesh){buffers.add(mesh.vertex);buffers.add(mesh.index);}};
     this.chunks.forEach(c=>{add(c.mesh);add(c.water);buffers.add(c.instance);});this.meshes.forEach(parts=>parts.forEach(add));add(this.waterMesh);
     [...this.viewBatchGroups.flatMap(m=>[...m.values()]),...this.shadowBatches.values(),...this.farBatches.values()].forEach(b=>buffers.add(b.buffer));
@@ -238,7 +239,9 @@ export class IslandRenderer {
     });
     this.postLayout = this.device.createBindGroupLayout({ entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} }, { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: {type:'uniform'} },
     ] });
+    this.postUniform=this.device.createBuffer({label:'Underwater view',size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
     const post = await createModule(postShader, 'Tone mapping and antialiasing WGSL');
     this.postPipeline = await this.device.createRenderPipelineAsync({ layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.postLayout] }),
       vertex: { module: post, entryPoint: 'vertexMain' }, fragment: { module: post, entryPoint: 'fragmentMain', targets: [{ format: this.format }] },
@@ -261,6 +264,7 @@ export class IslandRenderer {
     this.assertActive();
     for (let i = 0; i < 12; i++)for(let lod=0;lod<3;lod++) this.meshes.set(`rock-${i}-lod${lod}`, [this.mesh(rockMesh(this.config.seed, i,lod))]);
     for (let i = 0; i < 4; i++)for(let lod=0;lod<3;lod++) this.meshes.set(`grass-${i}-lod${lod}`, [this.mesh(grassMesh(i,lod))]);
+    for(let lod=0;lod<3;lod++)this.meshes.set(`algae-0-lod${lod}`,[this.mesh({...grassMesh(0,lod),material:'algae'})]);
     progress('Preparing distant forest views');
     const treeNames=modelNames.filter(n=>!n.startsWith('bush')&&n.endsWith('lod2'));
     for(const name of treeNames) {
@@ -346,6 +350,7 @@ export class IslandRenderer {
     add('palm-foliage', frond, flat, [0,0,1,1], [2,1,.30,.38]);
     add('palm-dry-foliage', frond, flat, [0,0,1,1], [2,1,.30,.38], [.85,.65,.38,1]);
     for (let i = 0; i < 4; i++) add(`grass-${i}`, grass, flat, [i, 0, 1, 1], [4, 1, 1.7, .36]);
+    add('algae',grass,flat,[0,0,1,1],[4,1,1.1,.36],[.42,.70,.34,1]);
   }
   private updateShadows() {
     const size=qualities[this.quality].shadowSize;
@@ -369,7 +374,7 @@ export class IslandRenderer {
     this.targets = [this.opaque, this.depth, this.composite, this.waterDepth];
     const sampler = this.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
     this.waterGroup = this.device.createBindGroup({ layout: this.waterLayout, entries: [{ binding: 0, resource: this.opaque.createView() }, { binding: 1, resource: this.depth.createView() }, { binding: 2, resource: sampler }] });
-    this.postGroup = this.device.createBindGroup({ layout: this.postLayout, entries: [{ binding: 0, resource: this.composite.createView() }, { binding: 1, resource: sampler }] });
+    this.postGroup = this.device.createBindGroup({ layout: this.postLayout, entries: [{ binding: 0, resource: this.composite.createView() }, { binding: 1, resource: sampler },{binding:2,resource:{buffer:this.postUniform}}] });
   }
   private ingest(stream: TerrainStream) {
     for (let i = 0; i < 4 && stream.pending.length; i++) {
@@ -397,9 +402,9 @@ export class IslandRenderer {
     const radius=bounds?Math.hypot(bounds.radius,(bounds.top-bounds.bottom)/2)*prop.scale+.8:prop.kind==='rock'?12*prop.scale:prop.kind==='bush'?4*prop.scale:2*prop.scale;
     const rockDistance=prop.scale>3.5?900:prop.scale>1.6?520:280;
     const boundaries=tree?settings.treeLod:prop.kind==='bush'?settings.shrubLod:prop.kind==='rock'||prop.kind==='pebble'?[{distance:radius*this.size[1]/28*settings.rockDetail,width:radius*this.size[1]/70*settings.rockDetail},{distance:radius*this.size[1]/9*settings.rockDetail,width:radius*this.size[1]/30*settings.rockDetail}]:settings.grassLod;
-    const stem=tree?`${prop.kind}-${prop.variant}`:prop.kind==='bush'?`bush-${prop.variant}`:prop.kind==='rock'||prop.kind==='pebble'?`rock-${prop.variant}`:`grass-${prop.variant}`;
+    const stem=tree?`${prop.kind}-${prop.variant}`:prop.kind==='bush'?`bush-${prop.variant}`:prop.kind==='rock'||prop.kind==='pebble'?`rock-${prop.variant}`:prop.kind==='algae'?'algae-0':`grass-${prop.variant}`;
     const info:PropRenderInfo={tree,radius,centerY:prop.y+(bounds?(bounds.top+bounds.bottom)/2:prop.kind==='bush'?1.5:.6)*prop.scale,
-      range:tree?settings.treeLod[2].distance+settings.treeLod[2].width/2:prop.kind==='bush'?520:prop.kind==='rock'?rockDistance:settings.grass,
+      range:tree?settings.treeLod[2].distance+settings.treeLod[2].width/2:prop.kind==='bush'?520:prop.kind==='rock'?rockDistance:prop.kind==='algae'?60:settings.grass,
       boundaries,shadowBoundaries:tree?settings.treeLod.slice(settings.shadowLodOffset,2):boundaries,meshes:Array.from({length:tree?3:boundaries.length+1},(_,i)=>this.meshes.get(`${stem}-lod${i}`)!)};
     this.propRenderInfo.set(prop,info);return info;
   }
@@ -427,7 +432,9 @@ export class IslandRenderer {
     const light = mat4.multiply(mat4.create(), mat4.orthoZO(mat4.create(), -shadowRadius, shadowRadius, -shadowRadius, shadowRadius, 1, 1200), mat4.lookAt(mat4.create(), eye, center, [0, 1, 0]));
     const lightPlanes=frustumPlanes(light),viewPlanes=frustumPlanes(matrices.vp);
     this.uniformValues.set(matrices.vp, 0); this.uniformValues.set(matrices.inverse, 16); this.uniformValues.set(light, 32);
-    this.uniformValues.set([camera.position[0], camera.position[1], camera.position[2], 0], 48);
+    const waterDepth=Math.max(0,(camera.character.waterLevel??camera.position[1])-camera.position[1]);
+    this.uniformValues.set([camera.position[0], camera.position[1], camera.position[2], waterDepth], 48);
+    this.write(this.postUniform,new Float32Array([waterDepth,time,camera.character.oxygen/60,0]));
     this.uniformValues.set([...sun, 1], 52); this.uniformValues.set([time, this.distance, ...this.size], 56);
     this.uniformValues.set([quality.shadowFilter, this.config.islandSizeMeters, 0, 0], 60);
     new Uint32Array(this.uniformValues.buffer)[63] = this.world.seed;
@@ -476,7 +483,7 @@ export class IslandRenderer {
       chunk.placedProps = d.props.map(prop => {
         const surface = surfaceOnMesh(d, chunk.surfaceVertices!, prop.x, prop.z);
         if (prop.kind === 'pebble') return { ...prop, y: surface.height - .08 * prop.scale, normal: surface.normal };
-        if (prop.kind !== 'rock') return { ...prop, y: surface.height - (prop.kind === 'grass' ? .04 : .20) };
+        if (prop.kind !== 'rock') return { ...prop, y: surface.height - (prop.kind === 'grass'||prop.kind==='algae' ? .04 : .20) };
         const rotation = orientation(surface.normal, prop.rotation);
         const y = embeddedRockHeight(this.rockShapes[prop.variant], prop.x, prop.z, prop.scale, rotation,
           (x, z) => surfaceFromTiles(tiles, x, z)?.height ?? this.world.height(x, z));
@@ -571,7 +578,7 @@ export class IslandRenderer {
       if(distance>1000)continue;
       const info=this.renderInfo(prop,settings),{tree,radius,range,boundaries}=info;
       const x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
-      const caster=!prop.kind.startsWith('grass')&&distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,x,y,z,radius);
+      const caster=prop.kind!=='grass'&&prop.kind!=='algae'&&distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,x,y,z,radius);
       const inView=distance<=range&&sphereInFrustum(viewPlanes,x,y,z,radius);
       if(!inView&&!caster)continue;
       const values=this.instance(prop,camera);
@@ -659,6 +666,6 @@ export class IslandRenderer {
     this.oceanInstance?.destroy();
     this.viewBatchGroups.forEach(m=>m.forEach(b=>b.buffer.destroy()));this.shadowBatches.forEach(b=>b.buffer.destroy());this.farBatches.forEach(b=>b.buffer.destroy());this.farUniform?.destroy(); this.materialUniforms.forEach(b => b.destroy());
     this.textures.forEach(t => t.destroy()); this.targets.forEach(t => t.destroy());
-    this.shadowTexture?.destroy();this.staticShadowTexture?.destroy(); this.uniform?.destroy(); this.context?.unconfigure(); this.device?.destroy();
+    this.shadowTexture?.destroy();this.staticShadowTexture?.destroy(); this.uniform?.destroy();this.postUniform?.destroy(); this.context?.unconfigure(); this.device?.destroy();
   }
 }

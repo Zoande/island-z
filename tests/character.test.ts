@@ -19,7 +19,7 @@ describe('first-person character',()=>{
     expect(input(['KeyQ','KeyE'])).toMatchObject({x:0,z:0,jump:false});
   });
   it('keeps diagonal speed equal to straight movement and supports sprinting',()=>{
-    const straight=walk(),diagonal=walk(flat,['KeyW','KeyD']),sprint=walk(flat,['KeyW','ShiftLeft']);
+    const straight=walk(),diagonal=walk(flat,['KeyW','KeyD']),sprint=walk(flat,['KeyW','ShiftLeft'],60,3);
     expect(Math.hypot(diagonal.feet[0],diagonal.feet[2])).toBeCloseTo(Math.abs(straight.feet[2]),8);
     expect(straight.velocity[2]).toBeCloseTo(-CHARACTER.walkSpeed,5);
     expect(sprint.velocity[2]).toBeCloseTo(-CHARACTER.sprintSpeed,5);
@@ -38,7 +38,7 @@ describe('first-person character',()=>{
       if(!c.grounded)airborne=true;else if(airborne) {landings++;airborne=false;}
       expect(c.feet[1]).toBeGreaterThanOrEqual(0);
     }
-    expect(peak).toBeGreaterThan(.45);expect(peak).toBeLessThan(.6);expect(landings).toBe(1);
+    expect(peak).toBeGreaterThan(.62);expect(peak).toBeLessThan(.7);expect(landings).toBe(1);
     c.update(1/60,idleInput);c.update(1/60,{...idleInput,jump:true});expect(c.feet[1]).toBeGreaterThan(0);
   });
   it('falls when leaving a ledge and cannot jump again in midair',()=>{
@@ -72,7 +72,7 @@ describe('first-person character',()=>{
     const bush:CharacterCollider={x:0,z:0,radius:100,bottom:0,top:3,kind:'bush'};
     const c=walk({...flat,colliders:()=>[bush]}),open=walk();
     expect(c.inBush).toBe(true);expect(c.feet[2]).toBeLessThan(-3);
-    expect(c.feet[2]/open.feet[2]).toBeCloseTo(.65,7);
+    expect(c.velocity[2]/open.velocity[2]).toBeCloseTo(.65,7);
   });
   it('steps over small rises but blocks tall terrain walls',()=>{
     for(const [height,passes]of [[.18,true],[.8,false]]as const) {

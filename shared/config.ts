@@ -1,4 +1,4 @@
-export const GENERATOR_VERSION = 'island-v7';
+export const GENERATOR_VERSION = 'island-v8';
 export interface WorldConfig { seed: string; islandSizeMeters: number }
 export interface WorldDescriptor extends WorldConfig { generatorVersion: string }
 export function parseWorldConfig(value: unknown): WorldConfig {

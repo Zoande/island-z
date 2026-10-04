@@ -94,6 +94,7 @@ describe('surface water',()=>{
   it('keeps vegetation out of submerged inland channels and places palms only on suitable coasts',()=>{
     const world=new WorldGenerator({seed:'island-z',islandSizeMeters:30720});
     for(const lake of world.water.lakes)for(const p of world.props(lake.x-64,lake.z-64,128)) {
+      if(p.kind==='algae')continue;
       const water=world.water.sample(p.x,p.z);
       if(water&&water.bank>.25)expect(world.height(p.x,p.z)).toBeGreaterThanOrEqual(water.level);
     }

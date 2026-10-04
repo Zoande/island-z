@@ -27,7 +27,9 @@ export class PlayerCamera {
   private syncPosition() {this.position.set([this.character.feet[0],this.character.feet[1]+CHARACTER.eyeHeight,this.character.feet[2]]);}
   get forward():[number,number,number] {return [Math.sin(this.yaw)*Math.cos(this.pitch),Math.sin(this.pitch),-Math.cos(this.yaw)*Math.cos(this.pitch)];}
   update(dt:number) {
-    this.character.update(dt,document.pointerLockElement===this.canvas?characterInput(this.keys,this.yaw):idleInput);
+    const respawns=this.character.respawns;
+    this.character.update(dt,document.pointerLockElement===this.canvas?characterInput(this.keys,this.yaw,this.pitch):idleInput);
+    if(this.character.respawns!==respawns){this.keys.clear();this.yaw=0;this.pitch=-.04;}
     this.syncPosition();
   }
   matrices(aspect:number,far:number) {

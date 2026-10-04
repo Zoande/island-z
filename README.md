@@ -23,12 +23,17 @@ need an `/api` proxy to this server.
 Click the landscape to capture the mouse. **WASD** moves, **Space** makes a small
 jump, **Shift** sprints, and **Escape** releases the mouse to use settings.
 Mouse movement controls the view; looking up/down never changes walking direction
-or speed. Settings contains render quality, sun elevation, frame rate and controls.
+or speed on land. In deep water, WASD swims in the direction you look, **Space**
+swims up, and **Shift** dives. Idle swimmers slowly sink; looking somewhat up
+while swimming forward also keeps you afloat. Settings contains render quality,
+sun elevation, frame rate and controls.
 The flying camera, vertical flight, wheel speed control and flight diagnostics are removed.
 
 The player is an invisible placeholder capsule: no character model or Blender
-assets are needed. Walking speed is 4.5 m/s, sprinting is 7 m/s, and the jump rises
-about half a meter. Gravity, step handling, steep-slope limits, trunk collision
+assets are needed. Eye height is 1.968 m, walking speed is 5.175 m/s, sprinting
+tops out at 10.465 m/s with a 4.5 m/s² acceleration ramp, and the jump rises
+about 0.66 meters (30% higher than the original jump). Each takeoff costs 4 stamina
+and insufficient stamina prevents jumping. Gravity, step handling, steep-slope limits, trunk collision
 and sliding run at a fixed 120 Hz. Bush foliage slows movement by 35% rather than
 blocking it. Oak, birch and palm trunks use simple collision volumes sized to the assets.
 Ground collision follows the actual rendered terrain triangles, including chunk
@@ -36,8 +41,19 @@ edges. Nearby terrain is prioritized; movement waits if its collision surface
 has not loaded. Nearby rocks use the full-detail surface with the same scale,
 rotation and burial as the visible mesh. The capsule stops/slides at steep rock
 faces, steps across low slabs, and can jump onto suitable surfaces or fall off
-their edges. Decorative pebbles remain non-solid. Swimming, fall damage and
-multiplayer player simulation are later work.
+their edges. Decorative pebbles and algae remain non-solid. Swimming uses the
+same terrain, rock and trunk collisions, with a 3.2 m/s movement limit. Shallow
+water supports wading and sloped shores let you walk back out.
+
+The lower-right oxygen bubbles give **60 seconds underwater**. Breathing air
+restores oxygen; running out returns you to the original game spawn with full
+oxygen and stamina. Stamina does not recover during acceleration, sprinting or
+active swimming. Gentle walking and water idling restore it slowly. A full bar
+allows about nine minutes of continuous lake swimming or nearly five minutes in
+the ocean. Exhaustion prevents sprinting and makes swimmers sink despite holding
+Space, so long open-ocean swims can end in drowning. Idle sinking is intentionally
+slower than diving. Vitals use elapsed time even if collision terrain is loading.
+Fall damage and multiplayer player simulation are later work.
 
 ## World settings
 
@@ -83,6 +99,13 @@ reports readiness. The server is read-only and has no database or authentication
   foliage wind, sky/haze, animated ocean, coastal foam, and tone mapping.
 - Coconut palms grow in sparse coastal stands. Ocean coverage follows the same
   seeded island boundary as the terrain; inland low terrain is not automatically ocean.
+- The shallow coastal shelf slopes into progressively deeper offshore water.
+  Seabed streaming continues outside the island with the same bounded working set.
+  Shallow ocean, lake and river beds have sparse, swaying algae using shared grass
+  textures and instancing. Underwater views use depth-dependent blue-green fog,
+  mild ripple distortion, and a reflective water underside with a light window.
+  Swimming and oxygen follow the geometric ocean waves. Inland water uses the
+  generated lake planes and downhill river surface levels.
 - Four bounded coastal catchments use priority flooding to find valley routes and
   basin spillways in the existing heightfield. Broad main rivers reach the ocean;
   tributaries can join both main rivers and other tributaries. Lowland channels
@@ -229,6 +252,8 @@ Tests cover deterministic generation, beach slopes, mountain continuity, materia
 weights, shared edges, detail stitching, rendered-triangle placement, rock
 support, character movement across frame rates, jumps, terrain steps/slopes,
 tree sweeps, bush slowdown, input focus and collision streaming,
+swimming controls, shore exits, stamina/exhaustion, oxygen/respawn timing, offshore
+depth and algae partition stability,
 ecology/pebble partition stability, every exported GLB, downhill flow,
 basin spillways, tributary/ocean connections, lake planes, waterbed continuity,
 clipped water boundaries, bounded large-world requests,
@@ -242,6 +267,9 @@ In development, `window.__island` exposes player/camera/world/stream/renderer di
 for inspection. It is omitted from production builds. Browser visual and GPU
 checks also use the Playwright profiler above. Inspect beaches, forests, ridges, steep rock placement, and
 quality changes, and check the console for rendering errors.
+`npx tsx scripts/check-swimming.ts` checks real keyboard sprint/ascent/dive,
+ocean and elevated-lake swimming, underwater quality changes and drowning reset
+in Chrome on this PC, saving screenshots and a report under `artifacts`.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 

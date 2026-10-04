@@ -40,6 +40,13 @@ fn skyColor(dir: vec3f) -> vec3f {
 fn fog(color: vec3f, position: vec3f) -> vec3f {
   if(frame.settings.z > .5) { return color; }
   let distance = length(position);
+  if(frame.camera.w > 0.0) {
+    let submersion=smoothstep(0.0,.18,frame.camera.w);
+    let light=exp(-frame.camera.w*.018);
+    let transmission=exp(-distance*vec3f(.065,.028,.020));
+    let underwater=color*transmission*vec3f(.70,.94,.94)*light+vec3f(.018,.16,.18)*light*(vec3f(1.0)-transmission);
+    return mix(color,underwater,submersion);
+  }
   let amount = 1.0 - exp(-distance * 0.00014);
   return mix(color, skyColor(normalize(position)), clamp(amount, 0.0, 0.91));
 }
@@ -226,6 +233,7 @@ struct Out { @builtin(position) clip: vec4f, @location(0) uv: vec2f };
 }
 @fragment fn fragmentMain(v: Out) -> @location(0) vec4f {
   let world = frame.inverse * vec4f(v.uv, 1.0, 1.0);
+  if(frame.camera.w > 0.0){return vec4f(mix(skyColor(normalize(world.xyz/world.w)),vec3f(.018,.16,.18)*exp(-frame.camera.w*.018),smoothstep(0.0,.18,frame.camera.w)),1.0);}
   return vec4f(skyColor(normalize(world.xyz / world.w)), 1.0);
 }
 `;
@@ -298,6 +306,13 @@ fn waveAt(xz: vec2f) -> vec3f {
   let rippleNormal = mix(vec2f(stillWave.y,stillWave.z),flowNormal,riverAmount);
   let n = normalize(v.waveNormal+vec3f(-rippleNormal.x,0.0,-rippleNormal.y)*mix(.18,.52,oceanAmount));
   let view = normalize(-v.position); let fresnel = 0.025 + 0.975 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
+  if(frame.camera.w > .04) {
+    let upward=max(dot(-n,view),0.0);
+    let window=smoothstep(.62,.78,upward);
+    let reflection=vec3f(.035,.20,.22)+vec3f(.025,.04,.025)*sin(rippleUV.x*.9+frame.time.x);
+    let transmittedSky=skyColor(normalize(vec3f(-view.x*.75,upward,-view.z*.75)))*vec3f(.65,.88,.92);
+    return vec4f(fog(mix(reflection,transmittedSky,window),v.position),1.0);
+  }
   let shallow = mix(vec3f(.09,.24,.19),vec3f(.045,.40,.36),oceanAmount);
   let deep = mix(vec3f(.035,.095,.10),vec3f(.012,.085,.16),oceanAmount);
   let water = mix(shallow,deep,1.0-exp(-thickness*.10));
@@ -327,6 +342,7 @@ fn waveAt(xz: vec2f) -> vec3f {
 export const postShader = /* wgsl */`
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var sceneSampler: sampler;
+@group(0) @binding(2) var<uniform> waterView:vec4f;
 struct Out { @builtin(position) clip: vec4f, @location(0) uv: vec2f };
 @vertex fn vertexMain(@builtin(vertex_index) index: u32) -> Out {
   let p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
@@ -336,14 +352,19 @@ fn tone(x: vec3f) -> vec3f { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 *
 fn luminance(x: vec3f) -> f32 { return dot(x, vec3f(0.299, 0.587, 0.114)); }
 @fragment fn fragmentMain(v: Out) -> @location(0) vec4f {
   let texel = 1.0 / vec2f(textureDimensions(scene));
-  let c = textureSample(scene, sceneSampler, v.uv).rgb;
-  let n = textureSample(scene, sceneSampler, v.uv + vec2f(0.0, -texel.y)).rgb;
-  let s = textureSample(scene, sceneSampler, v.uv + vec2f(0.0, texel.y)).rgb;
-  let e = textureSample(scene, sceneSampler, v.uv + vec2f(texel.x, 0.0)).rgb;
-  let w = textureSample(scene, sceneSampler, v.uv + vec2f(-texel.x, 0.0)).rgb;
+  let wet=smoothstep(0.0,.18,waterView.x);
+  let warp=vec2f(sin(v.uv.y*32.0+waterView.y*1.4),cos(v.uv.x*27.0+waterView.y*1.1))*.0009*wet;
+  let uv=clamp(v.uv+warp,vec2f(.001),vec2f(.999));
+  let c = textureSample(scene, sceneSampler, uv).rgb;
+  let n = textureSample(scene, sceneSampler, uv + vec2f(0.0, -texel.y)).rgb;
+  let s = textureSample(scene, sceneSampler, uv + vec2f(0.0, texel.y)).rgb;
+  let e = textureSample(scene, sceneSampler, uv + vec2f(texel.x, 0.0)).rgb;
+  let w = textureSample(scene, sceneSampler, uv + vec2f(-texel.x, 0.0)).rgb;
   let range = max(max(luminance(n), luminance(s)), max(luminance(e), luminance(w))) - min(min(luminance(n), luminance(s)), min(luminance(e), luminance(w)));
   let blend = smoothstep(0.08, 0.3, range) * 0.40;
-  let filtered = mix(c, (n + s + e + w) * 0.25, blend);
+  var filtered = mix(c, (n + s + e + w) * 0.25, blend);
+  let edge=smoothstep(.2,.7,length(v.uv-vec2f(.5)));
+  filtered*=mix(vec3f(1.0),vec3f(.83,.96,.98)*(1.0-edge*.20),wet);
   return vec4f(pow(tone(filtered), vec3f(1.0 / 2.2)), 1.0);
 }
 `;
