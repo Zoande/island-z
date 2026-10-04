@@ -22,6 +22,7 @@ button { color: inherit; }
 .meta-row label { color: #b4c5be; }
 .value { font-family: 'Space Mono', monospace; font-size: 10px; max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field { margin-top: 16px; }
+.setting-note { margin: 10px 0 0; color: #a9bdb3; font-size: 10px; line-height: 1.5; }
 .field label { display: flex; justify-content: space-between; font-size: 10px; color: #b4c5be; }
 input[type=range] { width: 100%; accent-color: #c0d0aa; height: 3px; margin: 12px 0 4px; }
 select { background: #ffffff08; border: 1px solid #b4c5be32; border-radius: 4px; padding: 5px 8px; color: #dce5de; font-size: 10px; }

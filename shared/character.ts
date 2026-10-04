@@ -1,6 +1,7 @@
 import type { MeshSurface } from './placement';
+import {rockSurface,type RockCollisionShape} from './rock-collision';
 export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boolean }
-export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush' }
+export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock';rock?:RockCollisionShape }
 export interface CharacterEnvironment {
   surface(x:number,z:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
@@ -26,15 +27,27 @@ export class Character {
     this.feet.set([x,y,z]);this.velocity.fill(0);this.ready=false;this.grounded=false;
     this.accumulator=0;this.jumpHeld=false;this.jumpBuffer=0;this.coyote=0;
   }
-  private support(x:number,z:number):MeshSurface|null {
+  private support(x:number,z:number,colliders:readonly CharacterCollider[]=this.environment.colliders(x,z)):MeshSurface|null {
     const center=this.environment.surface(x,z);if(!center)return null;
-    let height=center.height;
+    let height=center.height,normal=center.normal;
     const offset=CHARACTER.radius*.65,rounding=CHARACTER.radius-Math.sqrt(CHARACTER.radius**2-offset**2);
     for(const [dx,dz]of [[offset,0],[-offset,0],[0,offset],[0,-offset]]) {
       const sample=this.environment.surface(x+dx,z+dz);if(!sample)return null;
       height=Math.max(height,sample.height-rounding);
     }
-    return {...center,height};
+    for(const collider of colliders)if(collider.kind==='rock'&&collider.top>height&&Math.hypot(x-collider.x,z-collider.z)<collider.radius+CHARACTER.radius) {
+      // Sample the rounded capsule underside, not a bounding cylinder. This
+      // catches walls before the body penetrates and permits steps/jump landings.
+      const centerRock=rockSurface(collider,x,z);
+      const stepNormal:MeshSurface['normal']|undefined=collider.top<=this.feet[1]+CHARACTER.stepHeight?[0,1,0]:undefined;
+      if(centerRock&&centerRock.height>height){height=centerRock.height;normal=stepNormal??centerRock.normal;}
+      const reach=CHARACTER.radius*.95,drop=CHARACTER.radius-Math.sqrt(CHARACTER.radius**2-reach**2);
+      for(let i=0;i<8;i++) {
+        const angle=i*Math.PI/4,rock=rockSurface(collider,x+Math.cos(angle)*reach,z+Math.sin(angle)*reach);
+        if(rock&&rock.height-drop>height){height=rock.height-drop;normal=stepNormal??rock.normal;}
+      }
+    }
+    return {height,normal};
   }
   update(dt:number,input:CharacterInput) {
     const support=this.support(this.feet[0],this.feet[2]);
@@ -69,8 +82,8 @@ export class Character {
     return [x,z];
   }
   private step(dt:number,input:CharacterInput) {
-    const [x,y,z]=this.feet,oldGround=this.support(x,z);if(!oldGround)return;
-    const colliders=this.environment.colliders(x,z);
+    const [x,y,z]=this.feet,colliders=this.environment.colliders(x,z);
+    const oldGround=this.support(x,z,colliders);if(!oldGround)return;
     this.inBush=colliders.some(c=>c.kind==='bush'&&Math.hypot(x-c.x,z-c.z)<c.radius+CHARACTER.radius
       &&y<c.top&&y+CHARACTER.height>c.bottom);
     const amount=Math.hypot(input.x,input.z),speed=(input.sprint?CHARACTER.sprintSpeed:CHARACTER.walkSpeed)*(this.inBush?.65:1);
@@ -80,18 +93,18 @@ export class Character {
     this.coyote=this.grounded?.08:Math.max(0,this.coyote-dt);
     if(this.jumpBuffer>0&&this.coyote>0) {this.velocity[1]=CHARACTER.jumpSpeed;this.grounded=false;this.coyote=0;this.jumpBuffer=0;}
     this.jumpBuffer=Math.max(0,this.jumpBuffer-dt);
-    let dx=this.velocity[0]*dt,dz=this.velocity[2]*dt;const proposed=this.support(x+dx,z+dz);
+    let dx=this.velocity[0]*dt,dz=this.velocity[2]*dt;const proposed=this.support(x+dx,z+dz,colliders);
     if(proposed&&proposed.normal[1]<CHARACTER.slopeCos) {
       const [nx,,nz]=proposed.normal,normalLength=nx*nx+nz*nz,inward=dx*nx+dz*nz;
       if(inward<0&&normalLength>0) {dx-=nx*inward/normalLength;dz-=nz*inward/normalLength;}
     }
-    let [nextX,nextZ]=this.sweep(x,z,dx,dz,colliders),ground=this.support(nextX,nextZ);
+    let [nextX,nextZ]=this.sweep(x,z,dx,dz,colliders),ground=this.support(nextX,nextZ,colliders);
     if(!ground||ground.height>y+CHARACTER.stepHeight) {
-      const alongX=this.support(nextX,z),alongZ=this.support(x,nextZ);
+      const alongX=this.support(nextX,z,colliders),alongZ=this.support(x,nextZ,colliders);
       if(alongX&&alongX.height<=y+CHARACTER.stepHeight) {nextZ=z;ground=alongX;}
       else if(alongZ&&alongZ.height<=y+CHARACTER.stepHeight) {nextX=x;ground=alongZ;}
       else {nextX=x;nextZ=z;ground=oldGround;this.velocity[0]=0;this.velocity[2]=0;}
-      [nextX,nextZ]=this.sweep(x,z,nextX-x,nextZ-z,colliders);ground=this.support(nextX,nextZ)??oldGround;
+      [nextX,nextZ]=this.sweep(x,z,nextX-x,nextZ-z,colliders);ground=this.support(nextX,nextZ,colliders)??oldGround;
     }
     this.velocity[1]-=CHARACTER.gravity*dt;let nextY=y+this.velocity[1]*dt;
     const snap=this.grounded&&this.velocity[1]<=0&&y-ground.height<=CHARACTER.snapDistance;

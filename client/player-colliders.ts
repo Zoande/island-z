@@ -1,7 +1,10 @@
 import type { Prop } from '../shared/world';
 import type { CharacterCollider } from '../shared/character';
+import {rockCollider} from '../shared/rock-collision';
+import type {Point3} from '../shared/rocks';
 /** Simple trunk and soft foliage volumes matched to the existing assets. */
-export function playerCollider(prop:Prop):CharacterCollider|null {
+export function playerCollider(prop:Prop,rockPoints?:Point3[]):CharacterCollider|null {
+  if(prop.kind==='rock'&&rockPoints)return rockCollider(prop,rockPoints);
   if(prop.kind==='oak'||prop.kind==='birch') {
     const oak=prop.kind==='oak';
     const radius=(oak?[.42,.58,.70,.78,.55,.25]:[.19,.25,.29,.32,.22,.13])[prop.variant];

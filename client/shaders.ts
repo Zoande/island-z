@@ -108,6 +108,7 @@ fn shadow(position: vec3f, normal: vec3f) -> f32 {
   let uv = vec2f(p.x * 0.5 + 0.5, -p.y * 0.5 + 0.5);
   if (any(uv < vec2f(0.003)) || any(uv > vec2f(0.997)) || p.z < 0.0 || p.z > 1.0) { return 1.0; }
   let size=vec2f(textureDimensions(shadowMap));let texel=1.0/size;
+  if(frame.settings.x<1.5){return textureSampleCompareLevel(shadowMap,shadowSampler,uv,p.z-.0012);}
   // Factor the same separable 3x3 bilinear PCF kernel into four lookups.
   // Kernel coverage, receiver bias, and shadow softness remain unchanged.
   let f=fract(uv*size-.5);let a=(vec2f(2.0)-f)/3.0;let b=(vec2f(1.0)+f)/3.0;

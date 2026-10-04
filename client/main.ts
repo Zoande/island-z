@@ -2,10 +2,12 @@ import './style.css';
 import { GENERATOR_VERSION, parseWorldConfig, type WorldDescriptor } from '../shared/config';
 import { WorldGenerator } from '../shared/world';
 import { CHARACTER } from '../shared/character';
+import {rockPoints} from '../shared/rocks';
 import { PlayerCamera } from './camera';
 import { playerCollider } from './player-colliders';
 import { IslandRenderer } from './renderer';
 import { TerrainStream } from './streaming';
+import {qualityDescriptions,type Quality} from './quality';
 
 const canvas=document.querySelector<HTMLCanvasElement>('#world')!;
 const app=document.querySelector<HTMLDivElement>('#app')!;
@@ -17,6 +19,7 @@ app.innerHTML=`
     <div class="meta-row"><label>Frame rate</label><span id="fps" class="value">—</span></div>
     <div class="field"><label for="sun">Sun elevation <span id="sun-value">48°</span></label><input id="sun" type="range" min="12" max="80" value="48" aria-label="Sun elevation"/></div>
     <div class="meta-row field"><label for="quality">Render quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
+    <p id="quality-description" class="setting-note">${qualityDescriptions.medium}</p>
     <div class="controls"><span><kbd>W A S D</kbd>Move</span><span><kbd>SPACE</kbd>Jump</span><span><kbd>SHIFT</kbd>Sprint</span><span><kbd>MOUSE</kbd>Look</span><span><kbd>ESC</kbd>Release mouse</span></div>
     </div></section>
   <div class="caption"><div id="biome" class="biome">Coastal grassland</div></div>
@@ -58,7 +61,7 @@ async function start() {
     for(let i=0;i<28;i++) {
       const middle=(inner+outer)/2;if(world.coastDistance(spawnX,middle)>shoreOffset)inner=middle;else outer=middle;
     }
-    const shoreZ=(inner+outer)/2,nearby=world.props(spawnX-32,shoreZ-32,64,false).flatMap(p=>{const c=playerCollider(p);return c?[c]:[];});
+    const shoreZ=(inner+outer)/2,nearby=world.props(spawnX-32,shoreZ-32,64,false).flatMap(p=>{const c=playerCollider(p,p.kind==='rock'?rockPoints(config.seed,p.variant):undefined);return c?[c]:[];});
     let spawn:[number,number]=[spawnX,shoreZ];
     for(let i=0;i<100;i++) {
       const angle=i*2.399963,radius=i?Math.sqrt(i)*2:0,x=spawnX+Math.cos(angle)*radius,z=shoreZ+Math.sin(angle)*radius;
@@ -103,7 +106,7 @@ document.querySelector('.panel-head')!.addEventListener('click',()=>{
   document.querySelector('.panel-head')!.setAttribute('aria-expanded',String(!collapsed));get('collapse').textContent=collapsed?'+':'−';
 },{signal:events.signal});
 get('sun').addEventListener('input',e=>{const angle=Number((e.target as HTMLInputElement).value);if(renderer)renderer.sunElevation=angle;get('sun-value').textContent=`${angle}°`;},{signal:events.signal});
-get('quality').addEventListener('change',e=>{if(renderer)renderer.quality=(e.target as HTMLSelectElement).value as 'low'|'medium'|'high';},{signal:events.signal});
+get('quality').addEventListener('change',e=>{const quality=(e.target as HTMLSelectElement).value as Quality;if(renderer)renderer.quality=quality;get('quality-description').textContent=qualityDescriptions[quality];},{signal:events.signal});
 document.addEventListener('pointerlockchange',()=>app.classList.toggle('locked',document.pointerLockElement===canvas),{signal:events.signal});
 window.addEventListener('pagehide',()=>{dispose();events.abort();},{signal:events.signal});
 if(import.meta.hot)import.meta.hot.dispose(()=>{attempt++;dispose();events.abort();});

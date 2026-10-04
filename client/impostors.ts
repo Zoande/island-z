@@ -2,7 +2,7 @@ import {mat4} from 'gl-matrix';
 import {VERTEX_FLOATS} from '../shared/mesh';
 import type {GeometryData} from './geometry';
 import {common,lightingFunctions,octahedral} from './shaders';
-import {lodShader,TREE_LOD} from './lod';
+import {lodShader} from './lod';
 
 export interface ModelBounds {radius:number;bottom:number;top:number}
 export function modelBounds(parts:GeometryData[]):ModelBounds {
@@ -31,20 +31,21 @@ ${lightingFunctions}
 @group(1) @binding(2) var surfaces:texture_2d_array<f32>;
 struct Material {tile:vec4f,flags:vec4f,tint:vec4f};
 @group(1) @binding(3) var<uniform> material:Material;
-@group(2) @binding(0) var<uniform> originRange:vec4f;
+struct FarSettings {originRange:vec4f,handoff:vec4f};
+@group(2) @binding(0) var<uniform> far:FarSettings;
 struct Vertex {@location(0) position:vec3f,@location(2) uv:vec2f,@location(4) instance:vec4f,@location(5) rotation:vec4f,@location(7) fade:vec3f};
 struct Out {@builtin(position) clip:vec4f,@location(0) uv:vec2f,@location(1) position:vec3f,@location(2) @interpolate(flat) angle:f32,@location(3) @interpolate(flat) fade:vec3f,@location(4) @interpolate(flat) rotation:vec4f};
 @vertex fn vertexMain(v:Vertex)->Out {
-  let anchor=v.instance.xyz+originRange.xyz;
+  let anchor=v.instance.xyz+far.originRange.xyz;
   let distance=length(anchor.xz);
   let toward=normalize(-anchor.xz);
   let right=vec3f(toward.y,0.0,-toward.x);
   let p=anchor+(right*v.position.x+vec3f(0.0,v.position.y,0.0))*v.instance.w;
   var o:Out;o.clip=frame.vp*vec4f(p,1.0);o.position=p;o.uv=v.uv;o.rotation=v.rotation;
-  let transition=smoothstep(${TREE_LOD[2].distance-TREE_LOD[2].width/2}.0,${TREE_LOD[2].distance+TREE_LOD[2].width/2}.0,distance);
-  let coverage=1.0-smoothstep(originRange.w*.65,originRange.w,distance);
+  let transition=smoothstep(far.handoff.x,far.handoff.y,distance);
+  let coverage=1.0-smoothstep(far.originRange.w*.65,far.originRange.w,distance);
   o.fade=vec3f(transition,0.0,coverage);
-  if(distance<${TREE_LOD[2].distance-TREE_LOD[2].width/2}.0 || distance>originRange.w){o.clip=vec4f(2.0,2.0,2.0,1.0);}
+  if(distance<far.handoff.x || distance>far.originRange.w){o.clip=vec4f(2.0,2.0,2.0,1.0);}
   let yaw=2.0*atan2(v.rotation.y,v.rotation.w);
   o.angle=fract((atan2(toward.x,toward.y)-yaw)/6.283185307)*8.0;
   return o;

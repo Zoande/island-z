@@ -33,8 +33,11 @@ and sliding run at a fixed 120 Hz. Bush foliage slows movement by 35% rather tha
 blocking it. Oak, birch and palm trunks use simple collision volumes sized to the assets.
 Ground collision follows the actual rendered terrain triangles, including chunk
 edges. Nearby terrain is prioritized; movement waits if its collision surface
-has not loaded. Rock mesh collision, swimming, fall damage and multiplayer player
-simulation are later work.
+has not loaded. Nearby rocks use the full-detail surface with the same scale,
+rotation and burial as the visible mesh. The capsule stops/slides at steep rock
+faces, steps across low slabs, and can jump onto suitable surfaces or fall off
+their edges. Decorative pebbles remain non-solid. Swimming, fall damage and
+multiplayer player simulation are later work.
 
 ## World settings
 
@@ -102,13 +105,22 @@ the terrain outside local waterbeds remains unchanged.
 
 ## Performance and distance detail
 
-| Quality | Tree range | Grass range |
-| --- | ---: | ---: |
-| Low | 1,800 m | 70 m |
-| Medium | 2,600 m | 120 m |
-| High | 3,600 m | 170 m |
+| Quality | Shadow map | Shadow span | Tree view handoff | Tree range | Grass range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Low | 1,024² | 300 m | 240–360 m | 1,800 m | 70 m |
+| Medium | 2,048² | 460 m | 320–480 m | 2,600 m | 120 m |
+| High | 4,096² | 640 m | 500–700 m | 3,600 m | 170 m |
 
-Nearby trees retain their detailed GLBs. Geometry LODs overlap across 65–95 m
+Low uses one filtered shadow comparison and reduced-detail tree shadow casters;
+Medium/High use the four-comparison soft filter and detailed nearby casters.
+High retains full tree geometry through 100 m before its first overlap band,
+compared with 65 m on Low/Medium. Grass, shrub and rock geometry also stays detailed
+farther away on High. Shadow textures are recreated and their previous resources
+released when switching presets. Quality changes apply live; High costs more GPU
+time and memory. Terrain, object density, rock/trunk collision and bush slowdown
+are independent of the chosen preset.
+
+On Medium, nearby trees retain their detailed GLBs. Geometry LODs overlap across 65–95 m
 and 180–240 m; the transition to distant views overlaps across 320–480 m.
 Both models use complementary screen coverage instead of an abrupt swap.
 Per-pixel coverage avoids repeating checkerboards and quantized fade steps.
