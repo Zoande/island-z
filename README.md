@@ -27,7 +27,7 @@ Mouse movement controls the view; looking up/down never changes walking directio
 or speed on land. In deep water, WASD swims in the direction you look, **Space**
 swims up, and **Shift** dives. Idle swimmers slowly sink; looking somewhat up
 while swimming forward also keeps you afloat. Settings contains render quality,
-sun elevation, frame rate and controls.
+time of day, natural day/night cycling, frame rate and controls.
 The flying camera, vertical flight, wheel speed control and flight diagnostics are removed.
 
 The player is an invisible placeholder capsule: no character model or Blender
@@ -63,7 +63,7 @@ Fall damage and multiplayer player simulation are later work.
 ## Building
 
 The bottom-center hotbar has nine slots. **1** selects a random rock, **2** a
-random oak/birch/palm, **3** a wood wall, and **4** a stone wall. **5–9** are empty
+random oak/birch/palm, **3** a wood wall, **4** a stone wall, and **5** a torch. **6–9** are empty
 and put the preview away. Selecting rock/tree again chooses a different variant.
 Walls have separate slots and no variants. Mouse wheel rotates precisely (one
 degree per typical wheel notch); **R** turns 90 degrees; **left click** places.
@@ -83,6 +83,34 @@ stacked walls keep the position and rotation of the wall below. Rock support
 requires the entire wall footprint to fit a broad, level top. Walls cannot be
 underwater, deeply buried, or left with large gaps below their base. Placed
 objects immediately get normal movement collisions and shadows.
+
+Torches are upright ground stakes with a procedural flame and shared timber/stone
+materials. They require dry, reasonably level ground, reject overlaps, collide
+with the player, and use the same immediate placement, server validation, and saves.
+They stay lit, without fuel or extinguishing in this pass.
+
+## Daylight and night lighting
+
+The automatic cycle gives **3 real hours from sunrise to sunset** (06:00–18:00)
+and **1½ real hours from sunset to sunrise**. Settings has a time slider, Dawn/Noon/
+Night buttons, and a natural-cycle toggle. Changing time keeps the cycle running
+unless paused. Time and pause state are remembered in this browser; an automatic
+clock continues across reloads and time away. First visits start at 09:00.
+These are local rendering settings; shared multiplayer time can later use the
+renderer-independent clock in `shared/daylight.ts` with a server anchor.
+
+Sun direction/color, sky fill, haze, water reflections, foam, underwater light,
+and exposure follow the clock. Night has a star field, a procedural moon, cool
+moonlight with the normal shadow map, and darker surroundings. Tree impostors
+store albedo/normals and relight throughout the cycle. Small directional-light
+increments preserve static shadow caching while sunlight moves.
+
+Placed torches provide animated HDR flames, restrained glow, warm flickering
+inverse-square light, and analytical occlusion by nearby placed walls. Local light
+selection is bounded: Low/Medium/High shade the nearest 8/16/24 lights inside
+128 meters, fading between 96 and 128 meters, with up to 16 nearby wall blockers.
+Torch meshes remain visible farther away. This pass does not allocate cube shadow
+maps for every torch; natural scenery still casts sun/moon shadows.
 
 Placement appears locally before confirmation. The server recomputes support,
 ray visibility, snapping and overlap using shared rules, and saves accepted
@@ -321,6 +349,11 @@ in Chrome on this PC, saving screenshots and a report under `artifacts`.
 90-degree rotation, previews, optimistic rollback, confirmed movement collision,
 shared build updates and server-restart persistence. It uses isolated temporary
 saves and leaves the game's real builds untouched.
+
+`npx tsx scripts/check-daylight.ts` checks time presets, pause/resume and reload
+persistence, real torch hotbar/placement input, saved torches, nearby wall light
+occlusion, graphics presets, and day/dusk/night/ocean views on this PC. It uses
+an isolated server/save directory and writes screenshots and a report to `artifacts`.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 

@@ -7,6 +7,10 @@ dimensions and the nine hotbar assignments. Rocks reuse twelve cached procedural
 meshes at two fixed sizes; trees reuse the existing fifteen oak/birch/palm models.
 Both wall definitions have one variant. Wood has a dedicated ImageGen albedo and
 a procedural normal/roughness texture; stone reuses the shared rock material.
+The `fixture` family registers physical dimensions and optional light parameters.
+Torch is the first fixture: a dry-ground stake, reused materials, procedural flame,
+and a warm light defined in the registry. It saves through the same schema and
+needs no owner, fuel state, model file, or additional placement endpoint.
 The exact built-in ImageGen prompt is in `assets/building-imagegen-prompts.json`.
 Rebuild only the timber technical map with `python scripts/build_wall_material.py`.
 

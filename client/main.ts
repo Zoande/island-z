@@ -9,6 +9,7 @@ import { IslandRenderer } from './renderer';
 import { TerrainStream } from './streaming';
 import {qualityDescriptions,type Quality} from './quality';
 import {BuildingController} from './building';
+import {DaylightClock,daylightLighting} from '../shared/daylight';
 
 const canvas=document.querySelector<HTMLCanvasElement>('#world')!;
 const app=document.querySelector<HTMLDivElement>('#app')!;
@@ -18,7 +19,10 @@ app.innerHTML=`
   <section class="panel collapsed" aria-label="Settings"><button class="panel-head" aria-expanded="false"><span>Settings & controls</span><span id="collapse">+</span></button>
     <div class="panel-body"><hr class="rule"/>
     <div class="meta-row"><label>Frame rate</label><span id="fps" class="value">—</span></div>
-    <div class="field"><label for="sun">Sun elevation <span id="sun-value">48°</span></label><input id="sun" type="range" min="12" max="80" value="48" aria-label="Sun elevation"/></div>
+    <div class="field"><label for="daylight-time">Time of day <span id="daylight-value">09:00</span></label><input id="daylight-time" type="range" min="0" max="23.983333" step="0.016666667" value="9" aria-label="Time of day"/></div>
+    <label class="cycle-toggle"><input id="daylight-auto" type="checkbox" checked/> Natural day/night cycle</label>
+    <div class="daylight-presets"><button type="button" data-hour="6.5">Dawn</button><button type="button" data-hour="12">Noon</button><button type="button" data-hour="0">Night</button></div>
+    <p class="setting-note">3-hour day · 1½-hour night. Set a time or pause the cycle.</p>
     <div class="meta-row field"><label for="quality">Render quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
     <p id="quality-description" class="setting-note">${qualityDescriptions.medium}</p>
     <div class="controls"><span><kbd>W A S D</kbd>Move / swim</span><span><kbd>SPACE</kbd>Jump / swim up</span><span><kbd>SHIFT</kbd>Sprint / dive</span><span><kbd>MOUSE</kbd>Look / steer</span><span><kbd>ESC</kbd>Release mouse</span></div>
@@ -31,6 +35,17 @@ app.innerHTML=`
   <div class="overlay" id="overlay"><div class="eyebrow">A world from a seed</div><h1 id="overlay-title">Finding the island</h1><p id="message">Connecting to the world server…</p><div class="loading-line" id="loading-line"></div><button id="retry" hidden>Retry</button></div>`;
 const get=(id:string)=>document.getElementById(id)!;
 const overlay=get('overlay');
+const clockNow=()=>Date.now()/1000;
+const daylightStorage='island-z-daylight-v1';
+let savedDaylight:unknown;try{savedDaylight=JSON.parse(localStorage.getItem(daylightStorage)??'null');}catch{}
+const daylight=new DaylightClock(clockNow(),savedDaylight);
+function saveDaylight(){try{localStorage.setItem(daylightStorage,JSON.stringify(daylight.snapshot(clockNow())));}catch{}}
+function daylightUI() {
+  const hour=daylight.hour(clockNow()),minutes=Math.floor(hour*60)%1440;
+  get('daylight-value').textContent=`${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')} · ${daylightLighting(hour).label}`;
+  (get('daylight-time')as HTMLInputElement).value=String(hour);(get('daylight-auto')as HTMLInputElement).checked=daylight.automatic;
+}
+saveDaylight();daylightUI();
 let renderer:IslandRenderer|undefined,stream:TerrainStream|undefined,camera:PlayerCamera|undefined,building:BuildingController|undefined;
 let animation=0,attempt=0,failed=false;
 const events=new AbortController();
@@ -76,12 +91,12 @@ async function start() {
     }
     camera.spawn(spawn[0],world.height(...spawn),spawn[1]);camera.pitch=-.04;
     await renderer.initialize(progress);if(currentAttempt!==attempt||failed)return;
-    r.quality=(get('quality')as HTMLSelectElement).value as 'low'|'medium'|'high';r.sunElevation=Number((get('sun')as HTMLInputElement).value);
+    r.quality=(get('quality')as HTMLSelectElement).value as 'low'|'medium'|'high';r.daylightHour=daylight.hour(clockNow());
     building=new BuildingController(camera,world,r);progress('Loading saved builds');await building.initialize();if(currentAttempt!==attempt||failed)return;
     stream=new TerrainStream(config,r.profiler.enabled);stream.update(camera.position[0],camera.position[2],r.distance);
     get('status').textContent='Preparing';progress('Preparing the shoreline…');
     const c=camera,s=stream,b=building;
-    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,perf:r.profiler,get failed(){return failed;}};
+    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,daylight,perf:r.profiler,get failed(){return failed;}};
     let last=performance.now(),lastStream=-Infinity,lastUI=0,fps=0,respawns=0,noteUntil=0;
     const frame=(now:number)=>{
       if(failed||currentAttempt!==attempt)return;
@@ -92,7 +107,7 @@ async function start() {
         if(now-lastStream>350) {s.update(c.position[0],c.position[2],r.distance);lastStream=now;}
         r.profiler.endStage('streaming',stage);
         if(s.error)throw new Error(s.error);
-        r.render(c,s,now/1000);
+        r.daylightHour=daylight.hour(clockNow());r.render(c,s,now/1000);
         const player=c.character;
         if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;get('respawn-note').textContent='Out of oxygen — returned to shore';}
         if(now>noteUntil)get('respawn-note').textContent='';
@@ -103,6 +118,7 @@ async function start() {
         document.querySelector('.vitals')!.classList.toggle('low-oxygen',player.oxygen<15);
         if(c.character.ready&&!failed)overlay.classList.add('hidden');
         if(now-lastUI>300) {
+          daylightUI();
           lastUI=now;get('status').textContent=c.character.ready?'Exploring':'Preparing';get('fps').textContent=`${Math.round(fps)} fps`;
           const sample=world.sample(c.position[0],c.position[2]),water=world.water.sample(c.position[0],c.position[2]);
           get('biome').textContent=water&&water.bank>.6?water.kind==='lake'?'Inland lake':'Flowing stream'
@@ -119,7 +135,9 @@ document.querySelector('.panel-head')!.addEventListener('click',()=>{
   const collapsed=document.querySelector('.panel')!.classList.toggle('collapsed');
   document.querySelector('.panel-head')!.setAttribute('aria-expanded',String(!collapsed));get('collapse').textContent=collapsed?'+':'−';
 },{signal:events.signal});
-get('sun').addEventListener('input',e=>{const angle=Number((e.target as HTMLInputElement).value);if(renderer)renderer.sunElevation=angle;get('sun-value').textContent=`${angle}°`;},{signal:events.signal});
+get('daylight-time').addEventListener('input',e=>{daylight.setHour(Number((e.target as HTMLInputElement).value),clockNow());saveDaylight();daylightUI();},{signal:events.signal});
+get('daylight-auto').addEventListener('change',e=>{daylight.setAutomatic((e.target as HTMLInputElement).checked,clockNow());saveDaylight();daylightUI();},{signal:events.signal});
+document.querySelectorAll<HTMLButtonElement>('[data-hour]').forEach(button=>button.addEventListener('click',()=>{daylight.setHour(Number(button.dataset.hour),clockNow());saveDaylight();daylightUI();},{signal:events.signal}));
 get('quality').addEventListener('change',e=>{const quality=(e.target as HTMLSelectElement).value as Quality;if(renderer)renderer.quality=quality;get('quality-description').textContent=qualityDescriptions[quality];},{signal:events.signal});
 document.addEventListener('pointerlockchange',()=>app.classList.toggle('locked',document.pointerLockElement===canvas),{signal:events.signal});
 window.addEventListener('pagehide',()=>{dispose();events.abort();},{signal:events.signal});

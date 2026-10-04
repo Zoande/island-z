@@ -8,6 +8,8 @@ export function playerCollider(prop:Prop,points?:Point3[]):CharacterCollider|nul
   if(prop.kind==='rock'&&points)return rockCollider(prop,points);
   const wall=objectRegistry.get(prop.kind)?.wall;
   if(wall)return {kind:'wall',x:prop.x,z:prop.z,bottom:prop.y,top:prop.y+wall.height,radius:Math.hypot(wall.width,wall.depth)/2,wall:{halfWidth:wall.width/2,halfDepth:wall.depth/2,yaw:prop.rotation}};
+  const fixture=objectRegistry.get(prop.kind)?.fixture;
+  if(fixture)return {kind:'fixture',x:prop.x,z:prop.z,radius:fixture.radius*prop.scale,bottom:prop.y,top:prop.y+fixture.height*prop.scale};
   if(prop.kind==='oak'||prop.kind==='birch') {
     const oak=prop.kind==='oak',radius=(oak?[.42,.58,.70,.78,.55,.25]:[.19,.25,.29,.32,.22,.13])[prop.variant];
     const height=(oak?[14,19,23,27,18,11]:[17,21,25,29,20,13])[prop.variant];

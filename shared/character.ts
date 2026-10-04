@@ -3,7 +3,7 @@ import {rockSurface,type RockCollisionShape} from './rock-collision';
 import {wallContains,wallPush,wallSweep} from './wall-collision';
 export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boolean;swimVector?:[number,number,number] }
 export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river';offshoreMeters?:number}
-export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
+export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall'|'fixture';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
 export interface CharacterEnvironment {
   surface(x:number,z:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
@@ -96,7 +96,7 @@ export class Character {
     else if(this.stamina>=15)this.exhausted=false;
   }
   private sweep(x:number,z:number,dx:number,dz:number,colliders:readonly CharacterCollider[]):[number,number] {
-    const trees=colliders.filter(c=>c.kind==='tree'&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
+    const trees=colliders.filter(c=>(c.kind==='tree'||c.kind==='fixture')&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
     const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom);
     for(let pass=0;pass<4;pass++)for(const c of trees) {
       const nx=x-c.x,nz=z-c.z,distance=Math.hypot(nx,nz),radius=c.radius+CHARACTER.radius+.001;

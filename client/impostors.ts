@@ -95,7 +95,7 @@ export class TreeImpostors {
       @fragment fn fs(o:O)->@location(0) vec4f{return textureSample(img,s,o.uv);}`});
     this.mipPipeline=device.createRenderPipeline({layout:'auto',vertex:{module,entryPoint:'vs'},fragment:{module,entryPoint:'fs',targets:[{format:'rgba16float'}]}});
   }
-  async bake(elevation:number,pipeline:GPURenderPipeline,frameLayout:GPUBindGroupLayout,shadow:GPUTexture,materials:Map<string,GPUBindGroup>) {
+  async bake(elevation:number,pipeline:GPURenderPipeline,frameLayout:GPUBindGroupLayout,shadow:GPUTexture,materials:Map<string,GPUBindGroup>,lighting:GPUBuffer) {
     if(this.disposed)return;
     const encoder=this.device.createCommandEncoder({label:'Bake distant trees'}),buffers:GPUBuffer[]=[];
     const depth=this.device.createTexture({size:[128,128],format:'depth32float',usage:GPUTextureUsage.RENDER_ATTACHMENT});
@@ -107,7 +107,7 @@ export class TreeImpostors {
       const instance=this.device.createBuffer({size:44,usage:GPUBufferUsage.VERTEX,mappedAtCreation:true});new Float32Array(instance.getMappedRange()).set([-eye[0],-eye[1],-eye[2],1,0,0,0,1,1,0,1]);instance.unmap();buffers.push(instance);
       const values=new Float32Array(64);values.set(vp);values.set(mat4.invert(mat4.create(),vp)!,16);values.set(mat4.create(),32);values.set([...eye,0],48);values.set([...sun.map(v=>v/len),1],52);values.set([0,0,1,0],60);
       const uniform=this.device.createBuffer({size:256,usage:GPUBufferUsage.UNIFORM,mappedAtCreation:true});new Float32Array(uniform.getMappedRange()).set(values);uniform.unmap();buffers.push(uniform);
-      const frame=this.device.createBindGroup({layout:frameLayout,entries:[{binding:0,resource:{buffer:uniform}},{binding:1,resource:shadow.createView()},{binding:2,resource:this.device.createSampler({compare:'less-equal'})}]});
+      const frame=this.device.createBindGroup({layout:frameLayout,entries:[{binding:0,resource:{buffer:uniform}},{binding:1,resource:shadow.createView()},{binding:2,resource:this.device.createSampler({compare:'less-equal'})},{binding:3,resource:{buffer:lighting}}]});
       const pass=encoder.beginRenderPass({colorAttachments:[this.texture,this.surfaceTexture].map(texture=>({view:texture.createView({dimension:'2d',baseArrayLayer:i*8+view,arrayLayerCount:1,baseMipLevel:0,mipLevelCount:1}),clearValue:[0,0,0,0],loadOp:'clear' as const,storeOp:'store' as const})),depthStencilAttachment:{view:depth.createView(),depthClearValue:1,depthLoadOp:'clear',depthStoreOp:'discard'}});
       pass.setPipeline(pipeline);pass.setBindGroup(0,frame);pass.setVertexBuffer(1,instance);
       for(const part of model.parts) {pass.setBindGroup(1,materials.get(part.material)!);pass.setVertexBuffer(0,part.vertex);pass.setIndexBuffer(part.index,part.indexFormat);pass.drawIndexed(part.count);}

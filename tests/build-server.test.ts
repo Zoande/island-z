@@ -9,16 +9,24 @@ import {CHARACTER} from '../shared/character';
 import {solvePlacement} from '../shared/build-placement';
 import {buildCell,type BuildRequest} from '../shared/object-registry';
 const config={seed:'building-server-test',islandSizeMeters:1024};
-function clearRequest(store:BuildStore):BuildRequest {
+function clearRequest(store:BuildStore,definitionId='wall-wood'):BuildRequest {
   for(let z=40;z<200;z+=7)for(let x=-100;x<100;x+=7) {
     const height=store.scene.terrain(x,z).height,feet:[number,number,number]=[x,height,z+4],eye:[number,number,number]=[x,height+CHARACTER.eyeHeight,z+4];feet[1]=store.scene.terrain(feet[0],feet[2]).height;eye[1]=feet[1]+CHARACTER.eyeHeight;
     const dx=0,dy=height-eye[1],dz=-4,length=Math.hypot(dx,dy,dz);
-    const request:BuildRequest={requestId:'server-request-01',worldKey:store.worldKey,definitionId:'wall-wood',variant:0,rotation:0,feet,eye,direction:[0,dy/length,dz/length],standing:true};
+    const request:BuildRequest={requestId:'server-request-01',worldKey:store.worldKey,definitionId,variant:0,rotation:0,feet,eye,direction:[0,dy/length,dz/length],standing:true};
     if(solvePlacement(store.scene,request).valid)return request;
   }
   throw new Error('No clear build site');
 }
 describe('authoritative building saves and protocol',()=>{
+  it('persists torches with stable registry IDs and reconstructs their physical shape after restart',()=>{
+    const prefix=join(tmpdir(),'island-z-torch-'),directory=mkdtempSync(prefix);
+    try {
+      const store=new BuildStore(config,directory),request={...clearRequest(store,'torch'),requestId:'saved-torch-001'},result=store.place(request);
+      expect(result.ok).toBe(true);if(!result.ok)return;
+      const reloaded=new BuildStore(config,directory),solid=reloaded.scene.placed.get(result.object.id)!;expect(solid.object).toEqual(result.object);expect(solid.collider.kind).toBe('fixture');expect(reloaded.place(request)).toEqual(result);
+    }finally{if(!resolve(directory).startsWith(resolve(prefix)))throw new Error('Unexpected test directory');rmSync(directory,{recursive:true,force:true});}
+  });
   it('saves before confirming, survives reload, preserves IDs/connections, and makes retries idempotent',()=>{
     const prefix=join(tmpdir(),'island-z-build-'),directory=mkdtempSync(prefix);
     try {

@@ -50,6 +50,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
     object.normal=terrain.normal;const prop=buildProp(object);
     object.position[1]=embeddedRockHeight(scene.rocks[prop.variant],prop.x,prop.z,prop.scale,orientation(object.normal,object.rotation),(x,z)=>scene.terrain(x,z).height);
   }else if(definition.family==='tree')object.position[1]=terrain.height-.20;
+  else if(definition.family==='fixture')object.position[1]=terrain.height-.04;
   if(!hit)return fail('reach','Look at a surface within 10 meters');
   if(!request.standing||Math.abs(request.feet[1]-scene.standingHeight(request.feet[0],request.feet[2]))>.5)return fail('standing','Stand on solid ground to build');
   if(definition.family!=='wall'&&hit.solid)return fail('support','Place this on clear ground');
@@ -77,7 +78,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
       if(p[1]>object.position[1]+.18)return fail('ground','The wall is buried too deeply');
     }
   }else {
-    if(terrain.normal[1]<(definition.family==='tree'?.88:.55))return fail('slope','This slope is too steep');
+    if(terrain.normal[1]<(definition.family==='rock'?.55:.88))return fail('slope','This slope is too steep');
     // A ground-facing rock may follow a slope, but cannot span a cliff or a
     // deep hollow. Check deviation from its support plane over the footprint.
     const prop=buildProp(object);candidate=scene.solid(prop,object.id,object);const radius=candidate.collider.radius;
@@ -86,6 +87,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
       if(Math.abs(scene.terrain(prop.x+dx,prop.z+dz).height-plane)>(definition.family==='rock'?.5*prop.scale:.3))return fail('ground','The ground is too uneven for this object');
     }
     const water=scene.world.surfaceWater(object.position[0],object.position[2]);if(definition.family==='tree'&&water&&terrain.height<water.level+.05)return fail('water','Trees need dry ground');
+    if(definition.family==='fixture'&&water&&terrain.height<water.level+.05)return fail('water','Torches need dry ground');
   }
   if(Math.hypot(object.position[0]-request.eye[0],object.position[1]-request.eye[1],object.position[2]-request.eye[2])>BUILD_REACH+.65)return fail('reach','Placement is beyond your reach');
   candidate??=scene.solid(buildProp(object),object.id,object);

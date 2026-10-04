@@ -51,7 +51,7 @@ try {
       travel.push(await page.evaluate(()=>{const a=(window as any).__island;return {position:[...a.camera.position],resources:a.renderer.resources,estimatedGpuBytes:a.renderer.estimatedGpuBytes,pending:a.stream.loading};}));
       await page.screenshot({path:`artifacts/performance-${label}-travel-${travel.length}.png`});
     }
-    await page.evaluate(()=>{const a=(window as any).__island;a.renderer.sunElevation=25;});await page.waitForTimeout(2000);
+    await page.evaluate(()=>{const a=(window as any).__island;a.daylight.setHour(8,Date.now()/1000);a.daylight.setAutomatic(false,Date.now()/1000);});await page.waitForTimeout(2000);
     for(const quality of ['low','high','medium']) {
       await page.evaluate(q=>{const a=(window as any).__island;a.renderer.quality=q;a.stream.update(a.camera.position[0],a.camera.position[2],a.renderer.distance);},quality);
       await page.waitForFunction(()=>{const a=(window as any).__island;return a.stream.loading===0&&a.stream.pending.length===0;},{},{timeout:120000});

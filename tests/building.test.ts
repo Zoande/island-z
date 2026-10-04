@@ -47,6 +47,14 @@ describe('object registry and collision geometry',()=>{
   });
 });
 describe('shared authoritative placement',()=>{
+  it('places a grounded colliding torch and rejects water, solid intersections and unsuitable slopes',()=>{
+    const s=scene(),r=request('ground-torch','torch'),p=solvePlacement(s,r);expect(p.valid).toBe(true);expect(p.object.position[1]).toBeCloseTo(-.04);
+    s.add(p.object);expect(s.colliders(0,0)[0].kind).toBe('fixture');expect(solvePlacement(s,{...r,requestId:'overlap-torch'}).valid).toBe(false);
+    expect(solvePlacement(scene(undefined,[],()=>({level:1,kind:'lake'})),r).code).toBe('water');
+    expect(solvePlacement(scene((x,z)=>x*.8),r).code).toBe('slope');
+    const collider=playerCollider(buildProp(p.object))!,c=new Character({surface:()=>({height:0,normal:[0,1,0]}),colliders:()=>[collider]});c.spawn(0,0,3);
+    for(let i=0;i<120;i++)c.update(1/60,characterInput(new Set(['KeyW']),0));expect(c.feet[2]).toBeGreaterThanOrEqual(collider.radius+CHARACTER.radius-.001);
+  });
   it('accepts clear ground and rejects unsupported, out-of-reach and malformed actions',()=>{
     const s=scene(),r=request(),p=solvePlacement(s,r);expect(p.valid).toBe(true);expect(p.object.position[1]).toBeCloseTo(-.1);
     expect(validBuildRequest(r)).toBe(true);expect(validBuildRequest({...r,variant:999})).toBe(false);expect(validBuildRequest({...r,direction:[NaN,0,1]})).toBe(false);

@@ -5,6 +5,14 @@ struct Frame {
   camera: vec4f, sun: vec4f, time: vec4f, settings: vec4f,
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
+struct PointLight {positionRadius:vec4f,colorPower:vec4f};
+struct LightWall {centerYaw:vec4f,halfSize:vec4f};
+struct Lighting {
+  sunDirection:vec4f,sunColor:vec4f,moonDirection:vec4f,moonColor:vec4f,
+  ambientSky:vec4f,ambientGround:vec4f,zenith:vec4f,horizon:vec4f,counts:vec4f,
+  lights:array<PointLight,24>,walls:array<LightWall,16>,
+};
+@group(0) @binding(3) var<uniform> lighting:Lighting;
 fn worldHash(p: vec2i, seed: u32) -> f32 {
   var h = (bitcast<u32>(p.x) * 374761393u) ^ (bitcast<u32>(p.y) * 668265263u) ^ seed;
   h = (h ^ (h >> 13u)) * 1274126177u; h = h ^ (h >> 16u);
@@ -24,25 +32,65 @@ fn oceanCoast(p: vec2f) -> f32 {
   return (boundary-length(warp))*radius;
 }
 fn skyColor(dir: vec3f) -> vec3f {
-  let horizon = vec3f(0.66, 0.78, 0.85);
-  let zenith = vec3f(0.17, 0.37, 0.63);
-  var color = mix(horizon, zenith, pow(clamp(dir.y, 0.0, 1.0), 0.5));
-  let towardSun = max(dot(dir, frame.sun.xyz), 0.0);
-  color += vec3f(1.0, 0.76, 0.43) * pow(towardSun, 18.0) * 0.16;
-  color += vec3f(8.0, 6.7, 4.8) * smoothstep(0.9996, 0.9999, towardSun);
+  var color = mix(lighting.horizon.rgb, lighting.zenith.rgb, pow(clamp(dir.y, 0.0, 1.0), 0.5));
+  let towardSun = max(dot(dir, lighting.sunDirection.xyz), 0.0);
+  color += lighting.sunColor.rgb * pow(towardSun, 14.0) * (.14+lighting.ambientGround.w*.30) * lighting.sunDirection.w/3.5;
+  color += lighting.sunColor.rgb * 8.0 * smoothstep(0.99975, 0.99994, towardSun) * smoothstep(-.04,.03,lighting.sunDirection.y);
+  let towardMoon=max(dot(dir,lighting.moonDirection.xyz),0.0);
+  let moon=smoothstep(.99972,.99986,towardMoon);
+  let craters=.80+.20*worldNoise(dir.xz*1800.0+vec2f(dir.y*700.0),171u);
+  color+=lighting.moonColor.rgb*(moon*craters*1.8+pow(towardMoon,48.0)*.018)*lighting.zenith.w;
+  let sphere=vec2f(atan2(dir.z,dir.x)/6.2831853+.5,acos(clamp(dir.y,-1.0,1.0))/3.1415927)*vec2f(1200.0,600.0);
+  let cell=vec2i(floor(sphere));let starSeed=worldHash(cell,9187u);
+  let star=pow(max(0.0,1.0-length(fract(sphere)-vec2f(.5))/.28),2.0)*step(.9975,starSeed)*lighting.zenith.w*smoothstep(.03,.30,dir.y);
+  color+=mix(vec3f(.66,.79,1.0),vec3f(1.0,.85,.65),worldHash(cell,713u))*star*1.4;
   // Broad, subtle wisps rather than a baked sky photograph.
   let p = dir.xz / max(dir.y + 0.12, 0.1);
   let wisps = sin(p.x * 1.2 + sin(p.y * 1.6)) * sin(p.y * 2.4 + p.x * 0.25);
   let cloud = smoothstep(0.58, 0.88, wisps) * smoothstep(0.04, 0.2, dir.y) * 0.32;
-  color = mix(color, vec3f(0.9, 0.94, 0.97), cloud);
+  color = mix(color, mix(vec3f(.018,.027,.047),vec3f(.9,.94,.97),lighting.ambientSky.w), cloud);
   return color;
+}
+fn primaryRadiance()->vec3f {
+  return select(lighting.moonColor.rgb*lighting.moonDirection.w,lighting.sunColor.rgb*lighting.sunDirection.w,lighting.sunColor.w>.5);
+}
+fn environmentBrightness()->f32 {return mix(.075,1.0,lighting.ambientSky.w);}
+fn wallBlocks(origin:vec3f,destination:vec3f,wall:LightWall)->bool {
+  let c=cos(wall.centerYaw.w);let s=sin(wall.centerYaw.w);
+  let delta=origin-wall.centerYaw.xyz;let direction=destination-origin;
+  let p=vec3f(delta.x*c-delta.z*s,delta.y,delta.x*s+delta.z*c);
+  let d=vec3f(direction.x*c-direction.z*s,direction.y,direction.x*s+direction.z*c);
+  var near=0.0;var far=1.0;
+  for(var axis=0u;axis<3u;axis++) {
+    if(abs(d[axis])<.00001){if(abs(p[axis])>wall.halfSize[axis]){return false;}}
+    else {let a=(-wall.halfSize[axis]-p[axis])/d[axis];let b=(wall.halfSize[axis]-p[axis])/d[axis];near=max(near,min(a,b));far=min(far,max(a,b));}
+  }
+  return near<far&&far>.002&&near<.998;
+}
+fn localLighting(base:vec3f,roughness:f32,n:vec3f,position:vec3f,foliage:f32)->vec3f {
+  var result=vec3f(0.0);let view=normalize(-position);
+  for(var i=0u;i<u32(lighting.counts.x);i++) {
+    let light=lighting.lights[i];let offset=light.positionRadius.xyz-position;
+    let distance2=dot(offset,offset);let radius=light.positionRadius.w;
+    if(distance2>=radius*radius){continue;}
+    let direction=offset*inverseSqrt(max(distance2,.0001));let nl=max(dot(n,direction),0.0);
+    if(nl<=0.0&&foliage<=0.0){continue;}
+    var blocked=false;
+    for(var j=0u;j<u32(lighting.counts.y);j++){if(wallBlocks(position+n*.035,light.positionRadius.xyz,lighting.walls[j])){blocked=true;break;}}
+    if(blocked){continue;}
+    let cutoff=pow(1.0-distance2/(radius*radius),2.0);
+    let radiance=light.colorPower.rgb*light.colorPower.w*cutoff/(1.0+distance2);
+    let halfVector=normalize(direction+view);let specular=pow(max(dot(n,halfVector),0.0),mix(90.0,8.0,roughness))*.055*(1.0-roughness*.65);
+    result+=(base*(nl+foliage*max(dot(-n,direction),0.0)*.20)/3.14159+vec3f(specular))*radiance;
+  }
+  return result;
 }
 fn fog(color: vec3f, position: vec3f) -> vec3f {
   if(frame.settings.z > .5) { return color; }
   let distance = length(position);
   if(frame.camera.w > 0.0) {
     let submersion=smoothstep(0.0,.18,frame.camera.w);
-    let light=exp(-frame.camera.w*.018);
+    let light=exp(-frame.camera.w*.018)*environmentBrightness();
     let transmission=exp(-distance*vec3f(.065,.028,.020));
     let underwater=color*transmission*vec3f(.70,.94,.94)*light+vec3f(.018,.16,.18)*light*(vec3f(1.0)-transmission);
     return mix(color,underwater,submersion);
@@ -103,6 +151,7 @@ fn transform(v: Vertex) -> Interpolated {
   var out = transform(v); out.clip = frame.light * vec4f(out.position, 1.0); return out;
 }
 @fragment fn shadowFragment(v: Interpolated) {
+  if(material.flags.x==6.0){discard;}
   if(!lodVisible(v.clip.xy,v.fade)){discard;}
   if (material.flags.w <= 0.0) { return; }
   let texel = textureSampleLevel(albedo, materialSampler, v.uv, i32(material.tile.x), 0.0);
@@ -137,10 +186,11 @@ fn pbr(base: vec3f, roughness: f32, n: vec3f, position: vec3f, visibility: f32, 
   let geometry = (nl / (nl * (1.0 - k) + k)) * (nv / (nv * (1.0 - k) + k));
   let fresnel = vec3f(0.04) + vec3f(0.96) * pow(1.0 - vh, 5.0);
   let specular = distribution * geometry * fresnel / max(4.0 * nl * nv, 0.001);
-  let direct = (base * (1.0 - fresnel) / 3.14159 + specular) * nl * vec3f(3.5, 3.24, 2.85) * visibility;
-  let ambient = base * mix(vec3f(0.18, 0.17, 0.12), vec3f(0.38, 0.45, 0.53), n.y * 0.5 + 0.5);
-  let transmitted = base * foliage * pow(max(dot(-n, l), 0.0), 1.5) * 0.32;
-  return direct + ambient + transmitted;
+  let radiance=primaryRadiance();
+  let direct = (base * (1.0 - fresnel) / 3.14159 + specular) * nl * radiance * visibility;
+  let ambient = base * mix(lighting.ambientGround.rgb, lighting.ambientSky.rgb, clamp(n.y * .5 + .5,0.0,1.0));
+  let transmitted = base * foliage * pow(max(dot(-n, l), 0.0), 1.5) * radiance * .085 * mix(.5,1.0,visibility);
+  return direct + ambient + transmitted + localLighting(base,roughness,n,position,foliage);
 }
 @fragment fn fragmentMain(v: Interpolated, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   // Capture gradients before any screen-door/alpha discard. Otherwise mip
@@ -199,7 +249,15 @@ fn pbr(base: vec3f, roughness: f32, n: vec3f, position: vec3f, visibility: f32, 
   var visibility=1.0;
   // A backlit surface has zero direct sunlight; its shadow lookup cannot affect the result.
   if(dot(normal,frame.sun.xyz)>0.0) { visibility=shadow(v.position,normal); }
-  let light = pbr(base.rgb * material.tint.rgb, clamp(details.a * material.flags.y, 0.35, 1.0), normal, v.position, visibility, leaf);
+  var light = pbr(base.rgb * material.tint.rgb, clamp(details.a * material.flags.y, 0.35, 1.0), normal, v.position, visibility, leaf);
+  if(material.flags.x==6.0) {
+    let phase=frame.time.x*5.0+v.world.x*.71+v.world.z*.37;
+    let bend=sin(phase-v.uv.y*8.0)*.10*v.uv.y;
+    let x=abs((v.uv.x-.5)*2.0+bend);let width=pow(max(0.0,1.0-v.uv.y),.62)*(.75+.12*sin(phase*1.7+v.uv.y*17.0));
+    if(x>width||v.uv.y>.98){discard;}
+    let core=pow(max(0.0,1.0-x/max(width,.001)),1.5)*(1.0-v.uv.y*.5);
+    light=mix(vec3f(3.8,.55,.035),vec3f(9.0,5.5,1.3),core)*(1.0+.07*sin(phase*2.1));
+  }
   return vec4f(fog(light, v.position), 1.0);
 }
 `; }
@@ -236,7 +294,7 @@ struct Out { @builtin(position) clip: vec4f, @location(0) uv: vec2f };
 }
 @fragment fn fragmentMain(v: Out) -> @location(0) vec4f {
   let world = frame.inverse * vec4f(v.uv, 1.0, 1.0);
-  if(frame.camera.w > 0.0){return vec4f(mix(skyColor(normalize(world.xyz/world.w)),vec3f(.018,.16,.18)*exp(-frame.camera.w*.018),smoothstep(0.0,.18,frame.camera.w)),1.0);}
+  if(frame.camera.w > 0.0){return vec4f(mix(skyColor(normalize(world.xyz/world.w)),vec3f(.018,.16,.18)*exp(-frame.camera.w*.018)*environmentBrightness(),smoothstep(0.0,.18,frame.camera.w)),1.0);}
   return vec4f(skyColor(normalize(world.xyz / world.w)), 1.0);
 }
 `;
@@ -312,19 +370,19 @@ fn waveAt(xz: vec2f) -> vec3f {
   if(frame.camera.w > .04) {
     let upward=max(dot(-n,view),0.0);
     let window=smoothstep(.62,.78,upward);
-    let reflection=vec3f(.035,.20,.22)+vec3f(.025,.04,.025)*sin(rippleUV.x*.9+frame.time.x);
+    let reflection=(vec3f(.035,.20,.22)+vec3f(.025,.04,.025)*sin(rippleUV.x*.9+frame.time.x))*environmentBrightness();
     let transmittedSky=skyColor(normalize(vec3f(-view.x*.75,upward,-view.z*.75)))*vec3f(.65,.88,.92);
     return vec4f(fog(mix(reflection,transmittedSky,window),v.position),1.0);
   }
   let shallow = mix(vec3f(.09,.24,.19),vec3f(.045,.40,.36),oceanAmount);
   let deep = mix(vec3f(.035,.095,.10),vec3f(.012,.085,.16),oceanAmount);
-  let water = mix(shallow,deep,1.0-exp(-thickness*.10));
+  let water = mix(shallow,deep,1.0-exp(-thickness*.10))*environmentBrightness();
   let refractedUV = clamp(uv+n.xz*.0015*min(thickness,3.0),vec2f(.001),vec2f(.999));
   let terrainColor = textureSampleLevel(opaqueColor, waterSampler, refractedUV, 0.0).rgb;
   let transmitted = mix(terrainColor * vec3f(0.78, 0.92, 0.86), water, 1.0 - exp(-thickness * 0.16));
   var color = mix(transmitted, skyColor(reflect(-view, n)), fresnel);
   let h = normalize(view + frame.sun.xyz);
-  color += vec3f(2.8,2.35,1.8)*pow(max(dot(n,h),0.0),mix(650.0,240.0,oceanAmount));
+  color += primaryRadiance()*.80*pow(max(dot(n,h),0.0),mix(650.0,240.0,oceanAmount));
   let flowFoam = worldNoise(rippleUV*1.8,41u)*.65+worldNoise(rippleUV*5.3,71u)*.35;
   let stillFoam = worldNoise(world*1.8,41u)*.65+worldNoise(world*5.3,71u)*.35;
   let foamNoise = mix(stillFoam,flowFoam,riverAmount);
@@ -337,8 +395,9 @@ fn waveAt(xz: vec2f) -> vec3f {
   }
   foam=max(foam,smoothstep(.14,.23,length(n.xz))*smoothstep(.63,.82,foamNoise)*.20*oceanAmount);
   let caustic = pow(max(0.0,sin(world.x*2.1+sin(world.y*1.9+frame.time.x)) * sin(world.y*2.3-world.x*.3)),10.0);
-  color += vec3f(.12,.15,.11)*caustic*exp(-thickness*.7)*(1.0-fresnel);
-  color=mix(color,vec3f(.88,.93,.90),foam);
+  color += vec3f(.12,.15,.11)*caustic*exp(-thickness*.7)*(1.0-fresnel)*lighting.ambientSky.w;
+  color=mix(color,vec3f(.88,.93,.90)*environmentBrightness(),foam);
+  color+=localLighting(water,.3,n,v.position,0.0)*.35;
   return vec4f(fog(color, v.position), 1.0);
 }
 `;
@@ -366,8 +425,15 @@ fn luminance(x: vec3f) -> f32 { return dot(x, vec3f(0.299, 0.587, 0.114)); }
   let range = max(max(luminance(n), luminance(s)), max(luminance(e), luminance(w))) - min(min(luminance(n), luminance(s)), min(luminance(e), luminance(w)));
   let blend = smoothstep(0.08, 0.3, range) * 0.40;
   var filtered = mix(c, (n + s + e + w) * 0.25, blend);
+  // Restrained HDR bloom: distant flames and the sun retain a soft glow.
+  var glow=max(c-vec3f(1.4),vec3f(0.0))*.18;
+  for(var i=0u;i<4u;i++) {
+    let offsets=array<vec2f,4>(vec2f(-4.0,-4.0),vec2f(4.0,-4.0),vec2f(-4.0,4.0),vec2f(4.0,4.0));
+    glow+=max(textureSample(scene,sceneSampler,clamp(uv+offsets[i]*texel,vec2f(.001),vec2f(.999))).rgb-vec3f(1.4),vec3f(0.0))*.045;
+  }
+  filtered+=glow;
   let edge=smoothstep(.2,.7,length(v.uv-vec2f(.5)));
   filtered*=mix(vec3f(1.0),vec3f(.83,.96,.98)*(1.0-edge*.20),wet);
-  return vec4f(pow(tone(filtered), vec3f(1.0 / 2.2)), 1.0);
+  return vec4f(pow(tone(filtered*waterView.z), vec3f(1.0 / 2.2)), 1.0);
 }
 `;
