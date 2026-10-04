@@ -5,6 +5,7 @@ import {orientation,embeddedRockHeight} from './placement';
 import {rockSurface} from './rock-collision';
 import {boxShape,intersects,type ConvexShape} from './convex';
 import type {Point3} from './rocks';
+import {cataloguePlacement} from './catalogue-placement';
 export interface Placement {object:BuildObject;valid:boolean;code:string;reason:string}
 export function validBuildRequest(value:unknown):value is BuildRequest {
   const r=value as BuildRequest;if(!r||typeof r.requestId!=='string'||!/^[a-zA-Z0-9-]{8,80}$/.test(r.requestId))return false;
@@ -24,6 +25,7 @@ function shortenedWall(solid:BuildSolid,side:number):ConvexShape {
   return boxShape([solid.prop.x-Math.cos(yaw)*side*trim/2,solid.prop.y+w.height/2,solid.prop.z+Math.sin(yaw)*side*trim/2],[w.width/2-trim/2,w.height/2,w.depth/2],yaw);
 }
 export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement {
+  const catalogue=cataloguePlacement(scene,request);if(catalogue)return catalogue;
   const definition=objectDefinition(request.definitionId),hit=scene.raycast(request.eye,request.direction);
   const point=hit?.point??[request.eye[0]+request.direction[0]*BUILD_REACH,request.eye[1]+request.direction[1]*BUILD_REACH,request.eye[2]+request.direction[2]*BUILD_REACH]as Point3;
   const object:BuildObject={id:request.requestId,definitionId:request.definitionId,variant:request.variant,position:[point[0],scene.terrain(point[0],point[2]).height,point[2]],rotation:request.rotation%(Math.PI*2),normal:[0,1,0],support:{kind:'terrain'}};
@@ -52,7 +54,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
   }else if(definition.family==='tree')object.position[1]=terrain.height-.20;
   else if(definition.family==='fixture')object.position[1]=terrain.height-.04;
   if(!hit)return fail('reach','Look at a surface within 10 meters');
-  if(!request.standing||Math.abs(request.feet[1]-scene.standingHeight(request.feet[0],request.feet[2]))>.5)return fail('standing','Stand on solid ground to build');
+  if(!request.standing||Math.abs(request.feet[1]-scene.standingHeight(request.feet[0],request.feet[2],request.feet[1]))>.5)return fail('standing','Stand on solid ground to build');
   if(definition.family!=='wall'&&hit.solid)return fail('support','Place this on clear ground');
   let candidate:BuildSolid|undefined;
   if(definition.family==='wall') {
@@ -92,7 +94,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
   if(Math.hypot(object.position[0]-request.eye[0],object.position[1]-request.eye[1],object.position[2]-request.eye[2])>BUILD_REACH+.65)return fail('reach','Placement is beyond your reach');
   candidate??=scene.solid(buildProp(object),object.id,object);
   const player:ConvexShape={kind:'cylinder',center:[request.feet[0],request.feet[1]+CHARACTER.height/2,request.feet[2]],radius:CHARACTER.radius+.05,halfHeight:CHARACTER.height/2};
-  if(intersects(candidate.shape,player))return fail('player','Leave room for yourself');
+  if(candidate.shapes.some(shape=>intersects(shape,player)))return fail('player','Leave room for yourself');
   for(const solid of scene.nearby(object.position[0],object.position[2],candidate.collider.radius+.2)) {
     if(solid.id===object.id)continue;
     if(solid.id===anchor?.id&&object.support.kind==='rock')continue;
@@ -101,7 +103,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
       const side=object.support.socket==='right'?1:-1;
       if(!intersects(shortenedWall(anchor,side),shortenedWall(candidate,-side)))continue;
     }
-    if(intersects(candidate.shape,solid.shape))return fail('overlap',`Overlaps ${solid.collider.kind==='bush'?'a bush':solid.object?'another build':solid.collider.kind==='tree'?'a tree':'a rock'}`);
+    if(candidate.shapes.some(shape=>solid.shapes.some(other=>intersects(shape,other))))return fail('overlap',`Overlaps ${solid.collider.kind==='bush'?'a bush':solid.object?'another build':solid.collider.kind==='tree'?'a tree':'a rock'}`);
   }
   if(request.expected) {
     const e=request.expected,rotationDifference=Math.atan2(Math.sin(e.rotation-object.rotation),Math.cos(e.rotation-object.rotation));

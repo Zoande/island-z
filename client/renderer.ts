@@ -3,7 +3,7 @@ import type { WorldConfig } from '../shared/config';
 import { BASE_CHUNK, VERTEX_FLOATS, type ChunkData } from '../shared/mesh';
 import type { Prop } from '../shared/world';
 import { WorldGenerator } from '../shared/world';
-import { stitchedVertices } from '../shared/stitch';
+import {gradedChunk} from '../shared/build-terrain';
 import { rockPoints, type Point3 } from '../shared/rocks';
 import { surfaceOnMesh, surfaceFromTiles, orientation, embeddedRockHeight } from '../shared/placement';
 import type { PlayerCamera } from './camera';
@@ -15,6 +15,7 @@ import { loadGLB } from './glb';
 import { sceneShader,sceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
 import {wallGeometry} from './wall-geometry';
 import {torchGeometry} from './torch-geometry';
+import {mergeGeometry,slabGeometry,wallTorchGeometry,campfireFlames} from './catalogue-geometry';
 import {daylightLighting,shadowDirection} from '../shared/daylight';
 import {LIGHTING_FLOATS,packLighting} from './lighting';
 import {objectRegistry} from '../shared/object-registry';
@@ -277,9 +278,10 @@ export class IslandRenderer {
     for (const species of ['oak', 'birch']) for (let variant = 0; variant < 6; variant++) for (let lod = 0; lod < 3; lod++) modelNames.push(`${species}-${variant}-lod${lod}`);
     for (let variant = 0; variant < 4; variant++) for (let lod = 0; lod < 2; lod++) modelNames.push(`bush-${variant}-lod${lod}`);
     for (let variant = 0; variant < 3; variant++) for (let lod = 0; lod < 3; lod++) modelNames.push(`palm-${variant}-lod${lod}`);
+    for(const d of objectRegistry.values())if(d.asset==='blender'){modelNames.push(`${d.id}-0-lod0`);if(d.wall)for(const opening of ['door','window'])modelNames.push(`${d.id}-${opening}-0-lod0`);}
     // Small batches avoid a serial request waterfall without decoding everything at once.
     for (let i = 0; i < modelNames.length; i += 6) await Promise.all(modelNames.slice(i, i + 6).map(async name => {
-      const data=await loadGLB(`/models/${name}.glb`);
+      let data=mergeGeometry(await loadGLB(`/models/${name}.glb`));if(name==='campfire-0-lod0')data.push(...campfireFlames());
       this.assertActive();
       this.meshes.set(name,data.map(data=>this.mesh(data)));this.modelBounds.set(name,modelBounds(data));
     }));
@@ -287,10 +289,14 @@ export class IslandRenderer {
     for (let i = 0; i < 12; i++)for(let lod=0;lod<3;lod++) this.meshes.set(`rock-${i}-lod${lod}`, [this.mesh(rockMesh(this.config.seed, i,lod))]);
     for (let i = 0; i < 4; i++)for(let lod=0;lod<3;lod++) this.meshes.set(`grass-${i}-lod${lod}`, [this.mesh(grassMesh(i,lod))]);
     for(let lod=0;lod<3;lod++)this.meshes.set(`algae-0-lod${lod}`,[this.mesh({...grassMesh(0,lod),material:'algae'})]);
-    for(const definition of objectRegistry.values())if(definition.wall)this.meshes.set(`${definition.id}-0-lod0`,[this.mesh(wallGeometry(definition.id))]);
+    for(const definition of objectRegistry.values()){
+      if(definition.wall&&definition.asset!=='blender')for(const opening of [undefined,'door','window']as const){const stem=`${definition.id}${opening?'-'+opening:''}-0-lod0`,data=[wallGeometry(definition.id,opening)];this.meshes.set(stem,data.map(d=>this.mesh(d)));this.modelBounds.set(stem,modelBounds(data));}
+      if(definition.slab){const data=slabGeometry(definition.id);this.meshes.set(`${definition.id}-0-lod0`,data.map(d=>this.mesh(d)));this.modelBounds.set(`${definition.id}-0-lod0`,modelBounds(data));}
+    }
     this.meshes.set('torch-0-lod0',torchGeometry().map(data=>this.mesh(data)));
+    this.meshes.set('torch-wall-0-lod0',wallTorchGeometry().map(data=>this.mesh(data)));
     progress('Preparing distant forest views');
-    const treeNames=modelNames.filter(n=>!n.startsWith('bush')&&n.endsWith('lod2'));
+    const treeNames=modelNames.filter(n=>/^(oak|birch|palm)-/.test(n)&&n.endsWith('lod2'));
     for(const name of treeNames) {
       const bounds=[0,1,2].map(lod=>this.modelBounds.get(name.replace('lod2',`lod${lod}`))!);
       this.modelBounds.set(name.replace('lod2','lod0'),{radius:Math.max(...bounds.map(b=>b.radius)),bottom:Math.min(...bounds.map(b=>b.bottom)),top:Math.max(...bounds.map(b=>b.top))});
@@ -343,7 +349,7 @@ export class IslandRenderer {
     this.device.queue.submit([encoder.finish()]); source.destroy(); this.textures.push(texture); return texture;
   }
   private async loadMaterials() {
-    const [terrain, terrainNormal, bark, barkNormal, oak, birch, grass, flat, ground, groundNormal, bush, palm, palmNormal, frond,wood,woodNormal] = await Promise.all([
+    const [terrain, terrainNormal, bark, barkNormal, oak, birch, grass, flat, ground, groundNormal, bush, palm, palmNormal, frond,wood,woodNormal,linen,linenNormal] = await Promise.all([
       this.loadTexture('/textures/terrain-albedo.png', true, 2, 2), this.loadTexture('/textures/terrain-normal-roughness.png', false, 2, 2),
       this.loadTexture('/textures/bark-albedo.png', true, 2, 1), this.loadTexture('/textures/bark-normal-roughness.png', false, 2, 1),
       this.loadTexture('/textures/oak-foliage.png', true, 1, 1, true), this.loadTexture('/textures/birch-foliage.png', true, 1, 1, true),
@@ -353,6 +359,7 @@ export class IslandRenderer {
       this.loadTexture('/textures/palm-albedo.png', true, 2, 1), this.loadTexture('/textures/palm-normal-roughness.png', false, 2, 1),
       this.loadTexture('/textures/palm-foliage.png', true, 1, 1, true),
       this.loadTexture('/textures/wall-wood-albedo.png',true),this.loadTexture('/textures/wall-wood-normal-roughness.png',false),
+      this.loadTexture('/textures/linen-albedo.png',true),this.loadTexture('/textures/linen-normal-roughness.png',false),
     ]);
     const sampler = this.device.createSampler({ addressModeU: 'repeat', addressModeV: 'repeat', minFilter: 'linear', magFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: 4 });
     const add = (name: string, color: GPUTexture, normal: GPUTexture, tile: number[], flags: number[], tint = [1, 1, 1, 1]) => {
@@ -381,6 +388,10 @@ export class IslandRenderer {
     add('torch-wood',wood,woodNormal,[0,0,1,1],[1,1,0,0],[.52,.40,.28,1]);
     add('torch-head',terrain,terrainNormal,[3,0,1,1],[3,.7,0,0],[.20,.14,.10,1]);
     add('torch-flame',wood,flat,[0,0,1,1],[6,1,1,0]);
+    add('linen',linen,linenNormal,[0,0,1,1],[1,1,0,0],[.90,.93,.94,1]);
+    add('iron',terrain,terrainNormal,[3,0,1,1],[3,.45,0,0],[.12,.13,.14,1]);
+    add('ember',wood,flat,[0,0,1,1],[1,1,0,0],[.22,.06,.02,1]);
+    add('brick',terrain,terrainNormal,[3,0,1,1],[3,1,0,0],[.85,.43,.29,1]);
   }
   private updateShadows() {
     const size=qualities[this.quality].shadowSize;
@@ -428,15 +439,16 @@ export class IslandRenderer {
   private renderInfo(prop:Prop,settings:QualitySettings,built=false):PropRenderInfo {
     const cached=this.propRenderInfo.get(prop);if(cached)return cached;
     const tree=prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm';
-    const wall=objectRegistry.get(prop.kind)?.wall;
-    const fixture=objectRegistry.get(prop.kind)?.fixture;
-    const bounds=tree?this.modelBounds.get(`${prop.kind}-${prop.variant}-lod0`):undefined;
+    const definition=objectRegistry.get(prop.kind),structure=definition&&definition.family!=='tree'&&definition.family!=='rock';
+    const wall=definition?.wall;
+    const fixture=definition?.fixture;
+    const bounds=this.modelBounds.get(`${prop.kind}-${prop.variant}-lod0`);
     const radius=wall?Math.hypot(wall.width/2,wall.height/2,wall.depth/2):fixture?1.15:bounds?Math.hypot(bounds.radius,(bounds.top-bounds.bottom)/2)*prop.scale+.8:prop.kind==='rock'?12*prop.scale:prop.kind==='bush'?4*prop.scale:2*prop.scale;
     const rockDistance=prop.scale>3.5?900:prop.scale>1.6?520:280;
-    const boundaries=wall||fixture?[]:tree?built?settings.treeLod.slice(0,2):settings.treeLod:prop.kind==='bush'?settings.shrubLod:prop.kind==='rock'||prop.kind==='pebble'?[{distance:radius*this.size[1]/28*settings.rockDetail,width:radius*this.size[1]/70*settings.rockDetail},{distance:radius*this.size[1]/9*settings.rockDetail,width:radius*this.size[1]/30*settings.rockDetail}]:settings.grassLod;
-    const stem=wall||fixture?`${prop.kind}-0`:tree?`${prop.kind}-${prop.variant}`:prop.kind==='bush'?`bush-${prop.variant}`:prop.kind==='rock'||prop.kind==='pebble'?`rock-${prop.variant}`:prop.kind==='algae'?'algae-0':`grass-${prop.variant}`;
+    const boundaries=structure?[]:tree?built?settings.treeLod.slice(0,2):settings.treeLod:prop.kind==='bush'?settings.shrubLod:prop.kind==='rock'||prop.kind==='pebble'?[{distance:radius*this.size[1]/28*settings.rockDetail,width:radius*this.size[1]/70*settings.rockDetail},{distance:radius*this.size[1]/9*settings.rockDetail,width:radius*this.size[1]/30*settings.rockDetail}]:settings.grassLod;
+    const stem=structure?`${prop.kind}${prop.aperture?'-'+prop.aperture:''}-0`:tree?`${prop.kind}-${prop.variant}`:prop.kind==='bush'?`bush-${prop.variant}`:prop.kind==='rock'||prop.kind==='pebble'?`rock-${prop.variant}`:prop.kind==='algae'?'algae-0':`grass-${prop.variant}`;
     const info:PropRenderInfo={tree,radius,centerY:prop.y+(wall?wall.height/2:fixture?1:bounds?(bounds.top+bounds.bottom)/2:prop.kind==='bush'?1.5:.6)*prop.scale,
-      range:fixture?240:wall||tree&&built?settings.trees:tree?settings.treeLod[2].distance+settings.treeLod[2].width/2:prop.kind==='bush'?520:prop.kind==='rock'?rockDistance:prop.kind==='algae'?60:settings.grass,
+      range:structure||tree&&built?settings.trees:tree?settings.treeLod[2].distance+settings.treeLod[2].width/2:prop.kind==='bush'?520:prop.kind==='rock'?rockDistance:prop.kind==='algae'?60:settings.grass,
       boundaries,shadowBoundaries:tree?settings.treeLod.slice(settings.shadowLodOffset,2):boundaries,meshes:Array.from({length:tree?3:boundaries.length+1},(_,i)=>this.meshes.get(`${stem}-lod${i}`)!)};
     this.propRenderInfo.set(prop,info);return info;
   }
@@ -477,7 +489,8 @@ export class IslandRenderer {
     if(drawKeyRevision!==this.drawKeyRevision) {this.drawKeyRevision=drawKeyRevision;this.cachedDrawKeys=stream.drawKeys(new Set(this.chunks.keys()));}
     const drawKeys=this.cachedDrawKeys;
     const drawn = drawKeys.map(key => this.chunks.get(key)!);
-    const signature=`${this.topologyRevision}/${drawKeys.join('|')}`;
+    const gradeRevision=this.buildScene?.terrainRevision??0;
+    const signature=`${this.topologyRevision}/${drawKeys.join('|')}/${gradeRevision}`;
     const topologyChanged=signature!==this.topologySignature;
     this.topologySignature=signature;
     if(topologyChanged) {
@@ -492,9 +505,10 @@ export class IslandRenderer {
         if (overlapX && b.z === d.z + extent) neighbors[2] = Math.max(neighbors[2], b.level);
         if (overlapZ && b.x + e === d.x) neighbors[3] = Math.max(neighbors[3], b.level);
       }
-      const signature = neighbors.join(':');
+      const floorSignature=this.buildScene?.gradingSignature(d.x,d.z,extent)??'';
+      const signature = `${neighbors.join(':')}/${floorSignature}`;
       if (signature !== chunk.seam) {
-        const vertices = stitchedVertices(this.world, d, neighbors);
+        const vertices = gradedChunk(this.buildScene,this.world,d,neighbors);
         this.write(chunk.mesh.vertex, vertices); chunk.seam = signature; chunk.surfaceVertices = vertices;
         let min=Infinity,max=-Infinity;for(let i=1;i<vertices.length;i+=VERTEX_FLOATS){min=Math.min(min,vertices[i]);max=Math.max(max,vertices[i]);}chunk.renderBounds=[min,max];
       }
@@ -513,7 +527,7 @@ export class IslandRenderer {
       if (signature === chunk.support) continue;
       chunk.support = signature;
       const tiles = [chunk, ...nearby.filter(other => other !== chunk)].map(other => ({ data: other.data, vertices: other.surfaceVertices ?? other.data.vertices }));
-      chunk.placedProps = d.props.map(prop => {
+      chunk.placedProps = d.props.filter(prop=>!['grass','pebble','algae'].includes(prop.kind)||!this.buildScene?.floorAt(prop.x,prop.z)).map(prop => {
         const surface = surfaceOnMesh(d, chunk.surfaceVertices!, prop.x, prop.z);
         if (prop.kind === 'pebble') return { ...prop, y: surface.height - .08 * prop.scale, normal: surface.normal };
         if (prop.kind !== 'rock') return { ...prop, y: surface.height - (prop.kind === 'grass'||prop.kind==='algae' ? .04 : .20) };
@@ -648,7 +662,7 @@ export class IslandRenderer {
     };
     const staticChanged=!this.cacheStaticShadows||scenerySignature!==this.staticShadowSignature;
     this.staticShadowSignature=scenerySignature;
-    const staticCaster=(batch:Batch)=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock'||batch.mesh.material.startsWith('wall-')||batch.mesh.material==='torch-wood'||batch.mesh.material==='torch-head';
+    const staticCaster=(batch:Batch)=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock'||batch.mesh.material.startsWith('wall-')||['torch-wood','torch-head','linen','iron','brick','ember'].includes(batch.mesh.material);
     if(staticChanged||this.gpuProfiler?.sampling) {
       const pass=encoder.beginRenderPass({label:'Static sun casters',timestampWrites:this.gpuProfiler?.pass(0),colorAttachments:[],depthStencilAttachment:{view:this.staticShadowTexture.createView(),depthClearValue:1,depthLoadOp:staticChanged?'clear':'load',depthStoreOp:'store'}});
       if(staticChanged) {

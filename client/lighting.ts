@@ -15,13 +15,14 @@ export function packLighting(values:Float32Array,sky:DaylightLighting,camera:Arr
   const lights=solids.filter(s=>!!objectRegistry.get(s.prop.kind)?.light&&distance(s)<128).sort((a,b)=>distance(a)-distance(b)).slice(0,Math.min(budget,MAX_POINT_LIGHTS));
   for(let i=0;i<lights.length;i++) {
     const p=lights[i].prop,l=objectRegistry.get(p.kind)!.light!,phase=p.x*.71+p.z*.37;
+    const offset=l.offset??[0,0,0],c=Math.cos(p.rotation),s=Math.sin(p.rotation);
     const flicker=1+.055*Math.sin(time*9+phase)+.035*Math.sin(time*15.7+phase*1.3),at=36+i*8;
-    values.set([p.x-camera[0],p.y+l.height*p.scale-camera[1],p.z-camera[2],l.radius*p.scale],at);
+    values.set([p.x+(offset[0]*c+offset[2]*s)*p.scale-camera[0],p.y+(l.height+offset[1])*p.scale-camera[1],p.z+(-offset[0]*s+offset[2]*c)*p.scale-camera[2],l.radius*p.scale],at);
     values.set([...l.color,l.power*flicker*fade(distance(lights[i]))],at+4);
   }
-  const walls=lights.length?solids.filter(s=>!!s.collider.wall&&lights.some(l=>Math.hypot(s.prop.x-l.prop.x,s.prop.z-l.prop.z)<objectRegistry.get(l.prop.kind)!.light!.radius+s.collider.radius)).sort((a,b)=>distance(a)-distance(b)).slice(0,MAX_LIGHT_WALLS):[];
+  const walls=lights.length?solids.flatMap(s=>objectRegistry.get(s.prop.kind)?.light?[]:s.colliders.filter(c=>!!c.wall&&lights.some(l=>Math.hypot(c.x-l.prop.x,c.z-l.prop.z)<objectRegistry.get(l.prop.kind)!.light!.radius+c.radius))).sort((a,b)=>Math.hypot(a.x-camera[0],a.z-camera[2])-Math.hypot(b.x-camera[0],b.z-camera[2])).slice(0,MAX_LIGHT_WALLS):[];
   for(let i=0;i<walls.length;i++) {
-    const s=walls[i],c=s.collider,w=c.wall!,at=36+MAX_POINT_LIGHTS*8+i*8;
+    const c=walls[i],w=c.wall!,at=36+MAX_POINT_LIGHTS*8+i*8;
     values.set([c.x-camera[0],(c.bottom+c.top)/2-camera[1],c.z-camera[2],w.yaw],at);
     values.set([w.halfWidth,(c.top-c.bottom)/2,w.halfDepth,0],at+4);
   }

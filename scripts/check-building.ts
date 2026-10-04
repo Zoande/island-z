@@ -29,8 +29,8 @@ try {
   if(await page.locator('.hotbar-slot').count()!==9)throw new Error('Missing hotbar slots');
   await page.screenshot({path:'artifacts/building-hotbar.png'});
   await page.locator('#world').click({position:{x:800,y:400}});await page.waitForFunction(()=>!!document.pointerLockElement);await page.waitForTimeout(300);
-  await page.keyboard.press('1');const first=await page.evaluate(()=>(window as any).__island.building.variant);await page.keyboard.press('2');await page.keyboard.press('1');
-  if(await page.evaluate(()=>(window as any).__island.building.variant)===first)throw new Error('Rock did not reroll');
+  await page.keyboard.press('1');const first=await page.evaluate(()=>(window as any).__island.building.variant);await page.keyboard.press('e');
+  if(await page.evaluate(()=>(window as any).__island.building.variant)===first)throw new Error('Rock did not cycle');
   await page.mouse.wheel(0,100);await page.waitForTimeout(150);await page.keyboard.press('r');
   const rotation=await page.evaluate(()=>(window as any).__island.building.rotation);if(Math.abs(rotation-(Math.PI/2+Math.PI/180))>.0001)throw new Error('Rotation controls failed');
   await page.evaluate(()=>{const a=(window as any).__island;a.camera.pitch=-.35;});await page.waitForTimeout(500);await page.screenshot({path:'artifacts/building-rock-preview.png'});
@@ -61,7 +61,7 @@ try {
   // Stack through actual input. Top attachments must ignore both rotation controls.
   await page.locator('#world').click({position:{x:800,y:400}});await page.waitForFunction(()=>!!document.pointerLockElement);
   await page.evaluate(w=>{const a=(window as any).__island,x=w.position[0],z=w.position[2]+5;a.camera.spawn(x,a.building.scene.terrain(x,z).height,z);a.camera.yaw=0;a.camera.pitch=Math.atan2(w.position[1]+2.2-a.camera.position[1],5);},wall);
-  await page.keyboard.press('4');await page.waitForTimeout(300);
+  await page.keyboard.press('3');await page.keyboard.press('e');await page.waitForTimeout(300);
   const stack=await state('stack-preview');if(!stack.preview?.valid||stack.preview.object.support.socket!=='top')throw new Error('Missing valid top attachment');
   await page.keyboard.press('r');await page.mouse.wheel(0,100);await page.waitForTimeout(200);
   if(await page.evaluate(()=>(window as any).__island.building.preview.object.rotation)!==wall.rotation)throw new Error('Stack rotation changed');

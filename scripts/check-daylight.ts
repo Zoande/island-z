@@ -26,7 +26,7 @@ try {
   await hour(18);await page.screenshot({path:'artifacts/daylight-dusk.png'});await state('dusk');
   await hour(0);await page.screenshot({path:'artifacts/daylight-night.png'});await state('night');
   // Actual torch hotbar/preview/placement input, backed by an isolated save server.
-  await page.locator('#world').click({position:{x:800,y:400}});await page.waitForFunction(()=>!!document.pointerLockElement);await page.keyboard.press('5');
+  await page.locator('#world').click({position:{x:800,y:400}});await page.waitForFunction(()=>!!document.pointerLockElement);await page.keyboard.press('6');
   await page.evaluate(()=>{const a=(window as any).__island;a.camera.pitch=-.50;for(let i=0;i<36;i++){a.camera.yaw=i*Math.PI*2/36;a.building.update(0);if(a.building.preview?.valid)return;}throw new Error('No clear torch site');});await page.waitForTimeout(400);
   await page.screenshot({path:'artifacts/daylight-torch-preview.png'});await page.mouse.down();await page.mouse.up();
   await page.waitForFunction(()=>{const a=(window as any).__island;return a.building.pending.size===0&&a.building.scene.placed.size===1&&a.renderer.activePointLights===1;},{},{timeout:15000});

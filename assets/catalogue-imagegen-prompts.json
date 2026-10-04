@@ -1,0 +1,6 @@
+{
+  "tool": "built-in image_gen",
+  "asset": "public/textures/linen-albedo.png",
+  "technicalMap": "public/textures/linen-normal-roughness.png",
+  "prompt": "Use case: photorealistic-natural. Asset type: seamless square PBR albedo texture for rustic linen bedding in a realistic survival game. Flat top-down view of oatmeal cream linen, subtle irregular woven fibers, small soft thread flecks and mild age variation. Fine weave visible at close range, evenly sized threads; perfectly even diffuse lighting, no shadows, no highlights, no folds, no seams, no objects, no text, no borders. Seamless tiling on all edges, restrained neutral beige palette. Fill the entire image with the fabric surface."
+}

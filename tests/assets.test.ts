@@ -26,7 +26,7 @@ describe('exported vegetation assets',()=>{
     const materials=new Set(['oak-bark','birch-bark','oak-foliage','birch-foliage','bush-foliage','palm-bark','palm-foliage','palm-dry-foliage','coconut']);
     vi.stubGlobal('fetch',async(url:string)=>new Response(readFileSync(`public${url}`)));
     try {
-      const files=readdirSync('public/models').filter(f=>f.endsWith('.glb'));
+      const files=readdirSync('public/models').filter(f=>/^(oak|birch|palm|bush)-.*\.glb$/.test(f));
       expect(files.length).toBe(53);
       for(const file of files) {
         const meshes=await loadGLB(`/models/${file}`);

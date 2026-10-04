@@ -62,10 +62,22 @@ Fall damage and multiplayer player simulation are later work.
 
 ## Building
 
-The bottom-center hotbar has nine slots. **1** selects a random rock, **2** a
-random oak/birch/palm, **3** a wood wall, **4** a stone wall, and **5** a torch. **6–9** are empty
-and put the preview away. Selecting rock/tree again chooses a different variant.
-Walls have separate slots and no variants. Mouse wheel rotates precisely (one
+The bottom-center hotbar has nine slots. **Q / E** cycles backward/forward within
+the selected group. Reselecting a slot preserves its current choice.
+
+| Slot | Catalogue group |
+| --- | --- |
+| 1 | Rocks: twelve shapes in two sizes |
+| 2 | Trees: oak, birch and palm variants |
+| 3 | Walls: timber, stone, solid logs and brick |
+| 4 | Floors: timber and stone |
+| 5 | Roofs: timber and stone |
+| 6 | Lighting: ground torch, wall torch and campfire |
+| 7 | Furniture: bed, table and chair |
+| 8 | Attachments: timber door, braced door and window |
+| 9 | Empty hands; hide the preview |
+
+Mouse wheel rotates precisely (one
 degree per typical wheel notch); **R** turns 90 degrees; **left click** places.
 The first click on an unlocked landscape captures the mouse.
 
@@ -83,6 +95,26 @@ stacked walls keep the position and rotation of the wall below. Rock support
 requires the entire wall footprint to fit a broad, level top. Walls cannot be
 underwater, deeply buried, or left with large gaps below their base. Placed
 objects immediately get normal movement collisions and shadows.
+
+Floors and flat roofs are 3 × 3 m modules, 20 cm thick. Floors connect at their
+edges and locally lower terrain by **at most 0.4 m**, with a blended margin.
+Excavation is non-cumulative; unsupported gaps and substantial excavation are
+rejected. Grass and decorative pebbles under a floor are suppressed. Walls snap
+to floor edges. Roofs require a wall or another roof edge; they cannot be placed
+freely over the ground. Rotation follows structural supports to keep seams aligned. Roofs default over the
+supporting floor; R switches which side of a wall they cover.
+
+Placing a door or window automatically cuts an opening in an existing wall.
+One opening fits each wall; its frame, ray casts, movement collision and torch
+light occlusion all use the same cut. **F** opens/closes a door within 3 m.
+Blocked swings are rejected; door state is saved. Wall torches mount on either
+face, beside openings. Campfires remain lit. Beds, tables and chairs are decorative
+and colliding; sleeping, sitting, fuel and crafting are not introduced.
+
+Furniture, doors, windows, hearths and log walls have editable Blender sources
+in `assets/sources/building-catalogue.blend` and static shared-material GLBs.
+Rebuild them with `npm run assets:catalogue`. The bed uses a shared ImageGen linen
+albedo, with its prompt recorded in `assets/catalogue-imagegen-prompts.json`.
 
 Torches are upright ground stakes with a procedural flame and shared timber/stone
 materials. They require dry, reasonably level ground, reject overlaps, collide
@@ -117,7 +149,8 @@ ray visibility, snapping and overlap using shared rules, and saves accepted
 objects before responding. Rejections undo the placement (and dependent pending
 walls). Retries cannot duplicate confirmed objects. Nearby saved builds refresh
 every two seconds so other clients see them. Placement is unlimited and open to
-everyone; no ownership, resource costs, removal or terrain editing is added.
+everyone; no ownership, resource costs or removal is added. Terrain changes are
+limited to the small saved floor excavation stamps.
 
 Saves are append-only journals in `server/saves/`, excluded from Git.
 `BUILD_SAVE_DIR` overrides this directory. Seed, size and generator version
@@ -345,7 +378,7 @@ quality changes, and check the console for rendering errors.
 `npx tsx scripts/check-swimming.ts` checks real keyboard sprint/ascent/dive,
 ocean and elevated-lake swimming, underwater quality changes and drowning reset
 in Chrome on this PC, saving screenshots and a report under `artifacts`.
-`npx tsx scripts/check-building.ts` checks keyboard selection/rerolling, fine and
+`npx tsx scripts/check-building.ts` checks keyboard selection/cycling, fine and
 90-degree rotation, previews, optimistic rollback, confirmed movement collision,
 shared build updates and server-restart persistence. It uses isolated temporary
 saves and leaves the game's real builds untouched.
@@ -354,6 +387,10 @@ saves and leaves the game's real builds untouched.
 persistence, real torch hotbar/placement input, saved torches, nearby wall light
 occlusion, graphics presets, and day/dusk/night/ocean views on this PC. It uses
 an isolated server/save directory and writes screenshots and a report to `artifacts`.
+
+`npx tsx scripts/check-catalogue.ts` validates catalogue cycling, bounded floor
+excavation, automatic wall openings and rollback, functional doors, furniture,
+wall lights, connected roofs, new materials, and restart saves in Chrome.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 

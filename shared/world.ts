@@ -6,8 +6,8 @@ import type {CharacterWater} from './character';
 import {oceanWaveHeight} from './waves';
 /** Material order: sand, meadow, litter, bedrock, mud, gravel, moss, dry meadow. */
 export interface SurfaceSample { height: number; normal: [number, number, number]; forest: number; weights: [number, number, number, number, number, number, number, number] }
-export type PropKind = 'oak' | 'birch' | 'palm' | 'rock' | 'grass' | 'bush' | 'pebble' | 'algae' | 'wall-wood' | 'wall-stone' | 'torch';
-export interface Prop { kind: PropKind; x: number; y: number; z: number; scale: number; rotation: number; variant: number; normal?: [number, number, number] }
+export type PropKind = 'oak' | 'birch' | 'palm' | 'rock' | 'grass' | 'bush' | 'pebble' | 'algae' | import('./object-registry').BuiltKind;
+export interface Prop { kind: PropKind; x: number; y: number; z: number; scale: number; rotation: number; variant: number; normal?: [number, number, number];aperture?:'door'|'window' }
 interface MountainRange { x: number; z: number; angle: number; length: number; width: number; height: number; salt: number }
 export class WorldGenerator {
   readonly seed: number;

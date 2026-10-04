@@ -60,7 +60,7 @@ export class Character {
         if(rock&&rock.height-drop>height){height=rock.height-drop;normal=stepNormal??rock.normal;}
       }
     }
-    for(const collider of colliders)if(collider.kind==='wall'&&collider.top>height&&this.feet[1]+CHARACTER.height>collider.bottom&&wallContains(collider,x,z,CHARACTER.radius*.95)) {height=collider.top;normal=[0,1,0];}
+    for(const collider of colliders)if(collider.kind==='wall'&&collider.top>height&&this.feet[1]>=collider.top-CHARACTER.stepHeight-.002&&wallContains(collider,x,z,CHARACTER.radius*.95)) {height=collider.top;normal=[0,1,0];}
     return {height,normal};
   }
   update(dt:number,input:CharacterInput) {
@@ -97,7 +97,7 @@ export class Character {
   }
   private sweep(x:number,z:number,dx:number,dz:number,colliders:readonly CharacterCollider[]):[number,number] {
     const trees=colliders.filter(c=>(c.kind==='tree'||c.kind==='fixture')&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
-    const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom);
+    const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom&&!(this.grounded&&c.top<=this.feet[1]+CHARACTER.stepHeight&&c.top>=this.feet[1]));
     for(let pass=0;pass<4;pass++)for(const c of trees) {
       const nx=x-c.x,nz=z-c.z,distance=Math.hypot(nx,nz),radius=c.radius+CHARACTER.radius+.001;
       if(distance<radius) {x+=(distance?nx/distance:1)*(radius-distance);z+=(distance?nz/distance:0)*(radius-distance);}
@@ -177,7 +177,13 @@ export class Character {
       nextY=ground.height;this.velocity[1]=0;this.grounded=ground.normal[1]>=CHARACTER.slopeCos;
       if(!this.grounded) {this.coyote=0;this.velocity[0]+=ground.normal[0]*CHARACTER.gravity*dt;this.velocity[2]+=ground.normal[2]*CHARACTER.gravity*dt;}
     } else this.grounded=false;
+    nextY=this.ceiling(nextX,nextZ,y,nextY,colliders);
     this.feet.set([nextX,nextY,nextZ]);
+  }
+  private ceiling(x:number,z:number,oldY:number,nextY:number,colliders:readonly CharacterCollider[]):number {
+    if(nextY<=oldY)return nextY;
+    for(const c of colliders)if(c.kind==='wall'&&c.bottom>=oldY+CHARACTER.height-.002&&nextY+CHARACTER.height>c.bottom&&wallContains(c,x,z,CHARACTER.radius*.95)){nextY=Math.min(nextY,c.bottom-CHARACTER.height-.002);this.velocity[1]=Math.min(0,this.velocity[1]);}
+    return nextY;
   }
   private swimStep(dt:number,input:CharacterInput,water:CharacterWater,oldGround:MeshSurface,colliders:readonly CharacterCollider[]) {
     const [x,y,z]=this.feet,vector=input.swimVector??[input.x,0,input.z],amount=Math.hypot(...vector);
@@ -204,6 +210,7 @@ export class Character {
     const surfaceFeet=nextWater.level-CHARACTER.eyeHeight+.18;
     if(this.velocity[1]>0&&nextY>surfaceFeet){nextY=Math.max(y,surfaceFeet);this.velocity[1]=0;}
     if(ground&&nextY<ground.height){nextY=ground.height;this.velocity[1]=Math.max(0,this.velocity[1]);}
+    nextY=this.ceiling(nextX,nextZ,y,nextY,colliders);
     this.feet.set([nextX,nextY,nextZ]);
   }
 }

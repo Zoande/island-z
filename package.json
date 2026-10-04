@@ -14,6 +14,7 @@
     "assets:trees": "python scripts/build_trees.py",
     "assets:bushes": "python scripts/build_bushes.py",
     "assets:palms": "python scripts/build_palms.py",
+    "assets:catalogue": "python scripts/build_catalogue.py",
     "assets:materials": "python scripts/build_materials.py"
   },
   "dependencies": {

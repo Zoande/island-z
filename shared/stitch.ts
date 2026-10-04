@@ -2,8 +2,8 @@ import { GRID, VERTEX_FLOATS, BASE_CHUNK, type ChunkData } from './mesh';
 import type { WorldGenerator } from './world';
 // North/east/south/west boundary heights follow the adjacent coarser grid exactly.
 // Samples on the common grid remain untouched; intermediate vertices interpolate.
-export function stitchedVertices(world: WorldGenerator, data: ChunkData, neighbors: number[]): Float32Array {
-  const vertices = data.vertices.slice(), extent = BASE_CHUNK * 2 ** data.level;
+export function stitchedVertices(world: Pick<WorldGenerator,'sample'>, data: ChunkData, neighbors: number[],source=data.vertices): Float32Array {
+  const vertices = source.slice(), extent = BASE_CHUNK * 2 ** data.level;
   const step = extent / GRID;
   const edges = [
     Array.from({ length: GRID + 1 }, (_, i) => i),
