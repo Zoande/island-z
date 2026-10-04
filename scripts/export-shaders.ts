@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { common, sceneShader,sceneryShader,impostorBakeShader, waterShader, skyShader, postShader } from '../client/shaders';
+import { common, sceneShader,sceneryShader,impostorBakeShader, waterShader, skyShader, postShader,buildPreviewShader } from '../client/shaders';
 import {impostorShader} from '../client/impostors';
 import { WorldGenerator } from '../shared/world';
 mkdirSync('artifacts',{recursive:true});
-writeFileSync('artifacts/shaders.json',JSON.stringify({sceneShader,sceneryShader,impostorShader,impostorBakeShader,waterShader,skyShader,postShader}));
+writeFileSync('artifacts/shaders.json',JSON.stringify({sceneShader,sceneryShader,impostorShader,impostorBakeShader,waterShader,skyShader,postShader,buildPreviewShader}));
 const world=new WorldGenerator({seed:'island-z',islandSizeMeters:30720});
 console.log(JSON.stringify(world.water.metadataSize));
 writeFileSync('artifacts/water-network.json',JSON.stringify({lakes:world.water.lakes,rivers:world.water.rivers}));

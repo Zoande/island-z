@@ -1,8 +1,9 @@
 import type { MeshSurface } from './placement';
 import {rockSurface,type RockCollisionShape} from './rock-collision';
+import {wallContains,wallPush,wallSweep} from './wall-collision';
 export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boolean;swimVector?:[number,number,number] }
 export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river'}
-export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock';rock?:RockCollisionShape }
+export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
 export interface CharacterEnvironment {
   surface(x:number,z:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
@@ -58,6 +59,7 @@ export class Character {
         if(rock&&rock.height-drop>height){height=rock.height-drop;normal=stepNormal??rock.normal;}
       }
     }
+    for(const collider of colliders)if(collider.kind==='wall'&&collider.top>height&&this.feet[1]+CHARACTER.height>collider.bottom&&wallContains(collider,x,z,CHARACTER.radius*.95)) {height=collider.top;normal=[0,1,0];}
     return {height,normal};
   }
   update(dt:number,input:CharacterInput) {
@@ -90,12 +92,14 @@ export class Character {
   }
   private sweep(x:number,z:number,dx:number,dz:number,colliders:readonly CharacterCollider[]):[number,number] {
     const trees=colliders.filter(c=>c.kind==='tree'&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
+    const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom);
     for(let pass=0;pass<4;pass++)for(const c of trees) {
       const nx=x-c.x,nz=z-c.z,distance=Math.hypot(nx,nz),radius=c.radius+CHARACTER.radius+.001;
       if(distance<radius) {x+=(distance?nx/distance:1)*(radius-distance);z+=(distance?nz/distance:0)*(radius-distance);}
     }
+    for(const c of walls)[x,z]=wallPush(c,x,z,CHARACTER.radius+.001);
     for(let pass=0;pass<4&&Math.hypot(dx,dz)>1e-7;pass++) {
-      let time=1,hit:CharacterCollider|undefined;const length2=dx*dx+dz*dz;
+      let time=1,hit:CharacterCollider|undefined,wallNormal:[number,number]|undefined;const length2=dx*dx+dz*dz;
       for(const c of trees) {
         const ox=x-c.x,oz=z-c.z,radius=c.radius+CHARACTER.radius+.001;
         const b=ox*dx+oz*dz,constant=ox*ox+oz*oz-radius*radius,discriminant=b*b-length2*constant;
@@ -103,8 +107,9 @@ export class Character {
         const t=(-b-Math.sqrt(discriminant))/length2;
         if(t>=-1e-6&&t<time) {time=Math.max(0,t);hit=c;}
       }
+      for(const c of walls){const result=wallSweep(c,x,z,dx,dz,CHARACTER.radius+.001);if(result&&result.time<time){time=result.time;hit=c;wallNormal=result.normal;}}
       x+=dx*time;z+=dz*time;if(!hit)break;
-      const nx=x-hit.x,nz=z-hit.z,length=Math.hypot(nx,nz),normalX=nx/length,normalZ=nz/length;
+      const nx=x-hit.x,nz=z-hit.z,length=Math.hypot(nx,nz),normalX=wallNormal?.[0]??nx/length,normalZ=wallNormal?.[1]??nz/length;
       dx*=1-time;dz*=1-time;
       const inward=Math.min(0,dx*normalX+dz*normalZ);dx-=normalX*inward;dz-=normalZ*inward;
       const speedInto=Math.min(0,this.velocity[0]*normalX+this.velocity[2]*normalZ);

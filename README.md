@@ -1,7 +1,8 @@
 # Island Z — World Lab
 
 A TypeScript island explorer with a direct WebGPU/WGSL renderer and a placeholder
-first-person capsule controller. No game engine or multiplayer gameplay is included yet.
+first-person capsule controller and shared, persistent building. No game engine or
+multiplayer player simulation is included yet.
 
 ## Run
 
@@ -55,6 +56,44 @@ Space, so long open-ocean swims can end in drowning. Idle sinking is intentional
 slower than diving. Vitals use elapsed time even if collision terrain is loading.
 Fall damage and multiplayer player simulation are later work.
 
+## Building
+
+The bottom-center hotbar has nine slots. **1** selects a random rock, **2** a
+random oak/birch/palm, **3** a wood wall, and **4** a stone wall. **5–9** are empty
+and put the preview away. Selecting rock/tree again chooses a different variant.
+Walls have separate slots and no variants. Mouse wheel rotates precisely (one
+degree per typical wheel notch); **R** turns 90 degrees; **left click** places.
+The first click on an unlocked landscape captures the mouse.
+
+Aim at a visible surface within ten meters while standing on solid ground.
+Valid previews are translucent blue and darken gently while moving/looking.
+Invalid previews turn red and explain the reason. Grass is allowed; rocks,
+trunks, bushes, the player, and existing builds block overlapping placements.
+Some canopy overlap is allowed. Trees stay upright; rocks follow and embed into
+the terrain. Severe terrain irregularities are rejected.
+
+Walls are 3 m wide and 2.5 m tall, with 22 cm wood and 32 cm stone thickness.
+Endpoints snap within 80 cm: wheel/R rotation pivots around the fixed joint,
+including corners and mixed materials. Aim at an upper wall face to stack;
+stacked walls keep the position and rotation of the wall below. Rock support
+requires the entire wall footprint to fit a broad, level top. Walls cannot be
+underwater, deeply buried, or left with large gaps below their base. Placed
+objects immediately get normal movement collisions and shadows.
+
+Placement appears locally before confirmation. The server recomputes support,
+ray visibility, snapping and overlap using shared rules, and saves accepted
+objects before responding. Rejections undo the placement (and dependent pending
+walls). Retries cannot duplicate confirmed objects. Nearby saved builds refresh
+every two seconds so other clients see them. Placement is unlimited and open to
+everyone; no ownership, resource costs, removal or terrain editing is added.
+
+Saves are append-only journals in `server/saves/`, excluded from Git.
+`BUILD_SAVE_DIR` overrides this directory. Seed, size and generator version
+identify separate worlds, preserving older saves. A trailing interrupted write
+is preserved in a recovery file while complete records reload; corrupt complete
+records produce a clear server error. See [building foundations](docs/building.md)
+for the registry, protocol, persistence and extension points.
+
 ## World settings
 
 Edit `server/world.config.json`, restart `npm run server`, and refresh the page.
@@ -76,7 +115,9 @@ server port. Update the Vite proxy if changing the port.
 Generation is on demand: a larger island does **not** allocate or generate its
 whole area on startup. Draw distance controls the working set. The server's
 `GET /api/world` supplies the seed, size, and generator version; `GET /api/health`
-reports readiness. The server is read-only and has no database or authentication.
+reports readiness. `GET /api/builds` streams requested build regions and
+`POST /api/builds` validates placements. The server uses local save files and
+has no authentication or multiplayer player simulation.
 
 ## Terrain and rendering
 
@@ -255,6 +296,8 @@ tree sweeps, bush slowdown, input focus and collision streaming,
 swimming controls, shore exits, stamina/exhaustion, oxygen/respawn timing, offshore
 depth and algae partition stability,
 ecology/pebble partition stability, every exported GLB, downhill flow,
+registry variants, convex overlap, wall support/snapping/stacking, physical wall
+collisions, placement retries, concurrent conflicts and durable save recovery,
 basin spillways, tributary/ocean connections, lake planes, waterbed continuity,
 clipped water boundaries, bounded large-world requests,
 and the server protocol. The benchmark
@@ -270,6 +313,10 @@ quality changes, and check the console for rendering errors.
 `npx tsx scripts/check-swimming.ts` checks real keyboard sprint/ascent/dive,
 ocean and elevated-lake swimming, underwater quality changes and drowning reset
 in Chrome on this PC, saving screenshots and a report under `artifacts`.
+`npx tsx scripts/check-building.ts` checks keyboard selection/rerolling, fine and
+90-degree rotation, previews, optimistic rollback, confirmed movement collision,
+shared build updates and server-restart persistence. It uses isolated temporary
+saves and leaves the game's real builds untouched.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 

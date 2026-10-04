@@ -205,6 +205,9 @@ fn pbr(base: vec3f, roughness: f32, n: vec3f, position: vec3f, visibility: f32, 
 `; }
 export const sceneShader=makeSceneShader(false);
 export const sceneryShader=makeSceneShader(true);
+export const buildPreviewShader=sceneryShader.replace('struct Material {', '@group(2) @binding(0) var<uniform> previewColor:vec4f;\nstruct Material {')
+  .replace('return vec4f(fog(light, v.position), 1.0);',`let rim=pow(1.0-abs(dot(normal,normalize(-v.position))),2.0);
+  return vec4f(previewColor.rgb*(.65+rim*1.6),.22+rim*.28);`);
 export const lightingFunctions=sceneryShader.slice(sceneryShader.indexOf('fn shadow(position'),sceneryShader.indexOf('@fragment fn fragmentMain'));
 export const octahedral=/*wgsl*/`
 fn octEncode(n:vec3f)->vec2f {

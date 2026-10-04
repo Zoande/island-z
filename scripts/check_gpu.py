@@ -22,7 +22,7 @@ compact={'array_stride':32,'step_mode':'vertex','attributes':[a for a in vertex[
 compact_instance={'array_stride':44,'step_mode':'instance','attributes':instance['attributes']+[{'shader_location':7,'offset':32,'format':'float32x3'}]}
 for name,code in sources.items():
     module=device.create_shader_module(label=name,code=code)
-    mesh_buffers=[compact,compact_instance] if name in ('sceneryShader','impostorShader','impostorBakeShader') else [vertex,instance] if name in ('sceneShader','waterShader') else []
+    mesh_buffers=[compact,compact_instance] if name in ('sceneryShader','impostorShader','impostorBakeShader','buildPreviewShader') else [vertex,instance] if name in ('sceneShader','waterShader') else []
     pipeline=device.create_render_pipeline(label=name,layout='auto',
         vertex={'module':module,'entry_point':'vertexMain','buffers':mesh_buffers},
         fragment={'module':module,'entry_point':'fragmentMain','targets':[{'format':'rgba16float'}]*(2 if name=='impostorBakeShader' else 1)},

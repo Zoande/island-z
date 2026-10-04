@@ -1,6 +1,7 @@
 node_modules/
 dist/
 artifacts/
+server/saves/
 *.blend1
 __pycache__/
 .DS_Store

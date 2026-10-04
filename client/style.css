@@ -39,7 +39,19 @@ kbd { color: #e6ece8; border: 1px solid #c7d6cf36; border-radius: 3px; padding: 
 .low-oxygen .bubble::after { background: #e5b48c; }
 .respawn-note { position: absolute; top: 110px; left: 50%; transform: translateX(-50%); font-size: 12px; text-shadow: 0 1px 6px #102126; }
 .caption .biome { font-size: 22px; font-weight: 500; margin-top: 5px; }
-.play-hint { position: absolute; bottom: 35px; left: 50%; transform: translateX(-50%); font-size: 11px; padding: 10px 17px; border-radius: 30px; background: #10201b8c; backdrop-filter: blur(8px); white-space: nowrap; }
+.play-hint { position: absolute; top: 82px; left: 50%; transform: translateX(-50%); font-size: 11px; padding: 10px 17px; border-radius: 30px; background: #10201b8c; backdrop-filter: blur(8px); white-space: nowrap; }
+.building-hud { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); text-align: center; }
+.hotbar { display: flex; gap: 5px; pointer-events: auto; }
+.hotbar-slot { position: relative; width: 55px; height: 64px; padding: 3px; background: #102224bc; border: 1px solid #c4d6cf38; border-radius: 6px; backdrop-filter: blur(12px); color: #c9ddd7; }
+.hotbar-slot.selected { border-color: #9fe3e8; box-shadow: 0 0 0 1px #9fe3e836,0 0 15px #7bdce52b; background: #1b3d44cf; }
+.hotbar-slot:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.slot-number { position: absolute; top: 4px; left: 6px; font: 9px 'Space Mono',monospace; opacity: .75; }
+.hotbar-slot svg { display: block; width: 33px; height: 35px; margin: 6px auto 0; fill: #b8d0bc24; stroke: #c3d9cb; stroke-width: 1.5; stroke-linejoin: round; }
+.slot-label { display: block; font-size: 8px; white-space: nowrap; }
+.build-hint { font-size: 11px; color: #def2ec; margin-bottom: 6px; text-shadow: 0 2px 5px #081f26; white-space: nowrap; }
+.build-hint.invalid { color: #f4b0a1; }
+.build-controls { font-size: 9px; margin-bottom: 9px; color: #c0d6d0; text-shadow: 0 1px 5px #102126; }
+@media(max-width: 900px) { .building-hud { bottom: 85px; } .hotbar-slot { width: 40px; height: 55px; } .hotbar-slot svg { width: 27px; height: 29px; } .slot-label { font-size: 7px; } .build-hint { font-size: 9px; } }
 .reticle { position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; border: 1px solid #ffffffba; border-radius: 50%; display: none; }
 .locked .reticle { display: block; }
 .locked .play-hint { opacity: 0; }

@@ -12,7 +12,10 @@ import type { MeshSurface } from '../shared/placement';
 import { playerCollider } from './player-colliders';
 import { grassMesh, oceanMesh, rockMesh,compactVertices,compactIndices, type GeometryData } from './geometry';
 import { loadGLB } from './glb';
-import { sceneShader,sceneryShader,impostorBakeShader, skyShader, waterShader, postShader } from './shaders';
+import { sceneShader,sceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
+import {wallGeometry} from './wall-geometry';
+import {objectRegistry} from '../shared/object-registry';
+import type {BuildScene} from '../shared/build-scene';
 import type { TerrainStream } from './streaming';
 import { FrameProfiler,GpuProfiler } from './performance';
 import {TreeImpostors,impostorMesh,impostorShader,modelBounds,type ModelBounds} from './impostors';
@@ -64,6 +67,10 @@ export class IslandRenderer {
   private frameLayout!:GPUBindGroupLayout;
   private scenerySignature='';
   private visibleBatches:Batch[]=[];
+  buildScene?:BuildScene;
+  buildPreview:{prop:Prop;valid:boolean;motion:number}|null=null;
+  private previewPipeline!:GPURenderPipeline;
+  private previewInstance!:GPUBuffer;private previewUniform!:GPUBuffer;private previewGroup!:GPUBindGroup;
   private casterBatches:Batch[]=[];
   quality: Quality = 'medium'; sunElevation = 48;
   drawCalls = 0; triangles = 0; frameNumber = 0;
@@ -126,13 +133,14 @@ export class IslandRenderer {
       if(tile.data.x>x+32||tile.data.x+BASE_CHUNK<x-32||tile.data.z>z+32||tile.data.z+BASE_CHUNK<z-32)continue;
       for(const collider of tile.colliders??[])if(Math.hypot(collider.x-x,collider.z-z)<12+collider.radius)result.push(collider);
     }
+    result.push(...this.buildScene?.colliders(x,z)??[]);
     return result;
   }
   get resources() { return { chunks: this.chunks.size, textures: this.textures.length + this.targets.length + 2+(this.impostors?2:0), instanceBatches: this.viewBatchGroups.reduce((n,m)=>n+m.size,0)+this.shadowBatches.size+this.farBatches.size, drawCalls: this.drawCalls, triangles: this.triangles,
     sceneryInstances:this.visibleBatches.reduce((n,b)=>n+b.count,0),distantTreeInstances:[...this.farBatches.values()].reduce((n,b)=>n+b.count,0),shadowInstances:this.casterBatches.reduce((n,b)=>n+b.count,0),
     sceneSceneryTriangles:this.visibleBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),shadowSceneryTriangles:this.casterBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0) }; }
   get estimatedGpuBytes() {
-    const buffers=new Set<GPUBuffer>([this.uniform,this.postUniform,this.farUniform,this.oceanInstance,...this.materialUniforms].filter(Boolean));
+    const buffers=new Set<GPUBuffer>([this.uniform,this.postUniform,this.farUniform,this.oceanInstance,this.previewInstance,this.previewUniform,...this.materialUniforms].filter(Boolean));
     const add=(mesh?:Mesh)=>{if(mesh){buffers.add(mesh.vertex);buffers.add(mesh.index);}};
     this.chunks.forEach(c=>{add(c.mesh);add(c.water);buffers.add(c.instance);});this.meshes.forEach(parts=>parts.forEach(add));add(this.waterMesh);
     [...this.viewBatchGroups.flatMap(m=>[...m.values()]),...this.shadowBatches.values(),...this.farBatches.values()].forEach(b=>buffers.add(b.buffer));
@@ -208,6 +216,12 @@ export class IslandRenderer {
     });
     const sceneryModule=await createModule(sceneryShader,'Compact scenery WGSL');
     this.sceneryPipeline=await this.device.createRenderPipelineAsync({label:'Compact scenery',layout:sceneLayout,vertex:{module:sceneryModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:sceneryModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float'}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil});
+    const previewModule=await createModule(buildPreviewShader,'Building preview WGSL');
+    const previewLayout=this.device.createBindGroupLayout({entries:[{binding:0,visibility:GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}}]});
+    this.previewUniform=this.device.createBuffer({label:'Build preview tint',size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+    this.previewInstance=this.device.createBuffer({label:'Build preview transform',size:44,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+    this.previewGroup=this.device.createBindGroup({layout:previewLayout,entries:[{binding:0,resource:{buffer:this.previewUniform}}]});
+    this.previewPipeline=await this.device.createRenderPipelineAsync({label:'Translucent building preview',layout:this.device.createPipelineLayout({bindGroupLayouts:[frameLayout,this.materialLayout,previewLayout]}),vertex:{module:previewModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:previewModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float',blend:{color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha',operation:'add'},alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha',operation:'add'}}}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:{format:'depth32float',depthWriteEnabled:false,depthCompare:'less-equal'}});
     this.shadowPipeline = await this.device.createRenderPipelineAsync({ label: 'Alpha-tested shadows', layout: shadowLayout,
       vertex: { module: sceneModule, entryPoint: 'shadowVertex', buffers: [vertexLayout, instanceLayout] },
       fragment: { module: sceneModule, entryPoint: 'shadowFragment', targets: [] },
@@ -265,6 +279,7 @@ export class IslandRenderer {
     for (let i = 0; i < 12; i++)for(let lod=0;lod<3;lod++) this.meshes.set(`rock-${i}-lod${lod}`, [this.mesh(rockMesh(this.config.seed, i,lod))]);
     for (let i = 0; i < 4; i++)for(let lod=0;lod<3;lod++) this.meshes.set(`grass-${i}-lod${lod}`, [this.mesh(grassMesh(i,lod))]);
     for(let lod=0;lod<3;lod++)this.meshes.set(`algae-0-lod${lod}`,[this.mesh({...grassMesh(0,lod),material:'algae'})]);
+    for(const definition of objectRegistry.values())if(definition.wall)this.meshes.set(`${definition.id}-0-lod0`,[this.mesh(wallGeometry(definition.id))]);
     progress('Preparing distant forest views');
     const treeNames=modelNames.filter(n=>!n.startsWith('bush')&&n.endsWith('lod2'));
     for(const name of treeNames) {
@@ -319,7 +334,7 @@ export class IslandRenderer {
     this.device.queue.submit([encoder.finish()]); source.destroy(); this.textures.push(texture); return texture;
   }
   private async loadMaterials() {
-    const [terrain, terrainNormal, bark, barkNormal, oak, birch, grass, flat, ground, groundNormal, bush, palm, palmNormal, frond] = await Promise.all([
+    const [terrain, terrainNormal, bark, barkNormal, oak, birch, grass, flat, ground, groundNormal, bush, palm, palmNormal, frond,wood,woodNormal] = await Promise.all([
       this.loadTexture('/textures/terrain-albedo.png', true, 2, 2), this.loadTexture('/textures/terrain-normal-roughness.png', false, 2, 2),
       this.loadTexture('/textures/bark-albedo.png', true, 2, 1), this.loadTexture('/textures/bark-normal-roughness.png', false, 2, 1),
       this.loadTexture('/textures/oak-foliage.png', true, 1, 1, true), this.loadTexture('/textures/birch-foliage.png', true, 1, 1, true),
@@ -328,6 +343,7 @@ export class IslandRenderer {
       this.loadTexture('/textures/bush-foliage.png', true, 1, 1, true),
       this.loadTexture('/textures/palm-albedo.png', true, 2, 1), this.loadTexture('/textures/palm-normal-roughness.png', false, 2, 1),
       this.loadTexture('/textures/palm-foliage.png', true, 1, 1, true),
+      this.loadTexture('/textures/wall-wood-albedo.png',true),this.loadTexture('/textures/wall-wood-normal-roughness.png',false),
     ]);
     const sampler = this.device.createSampler({ addressModeU: 'repeat', addressModeV: 'repeat', minFilter: 'linear', magFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: 4 });
     const add = (name: string, color: GPUTexture, normal: GPUTexture, tile: number[], flags: number[], tint = [1, 1, 1, 1]) => {
@@ -351,6 +367,8 @@ export class IslandRenderer {
     add('palm-dry-foliage', frond, flat, [0,0,1,1], [2,1,.30,.38], [.85,.65,.38,1]);
     for (let i = 0; i < 4; i++) add(`grass-${i}`, grass, flat, [i, 0, 1, 1], [4, 1, 1.7, .36]);
     add('algae',grass,flat,[0,0,1,1],[4,1,1.1,.36],[.42,.70,.34,1]);
+    add('wall-wood',wood,woodNormal,[0,0,1,1],[1,1,0,0],[.90,.87,.80,1]);
+    add('wall-stone',terrain,terrainNormal,[3,0,1,1],[3,1,0,0],[.86,.89,.90,1]);
   }
   private updateShadows() {
     const size=qualities[this.quality].shadowSize;
@@ -395,16 +413,17 @@ export class IslandRenderer {
     if(!values) {values=new Float32Array([0,0,0,prop.scale,...orientation(prop.normal??[0,1,0],prop.rotation),1,0,1]);this.propInstances.set(prop,values);}
     values[0]=prop.x-camera.position[0];values[1]=prop.y-camera.position[1];values[2]=prop.z-camera.position[2];return values;
   }
-  private renderInfo(prop:Prop,settings:QualitySettings):PropRenderInfo {
+  private renderInfo(prop:Prop,settings:QualitySettings,built=false):PropRenderInfo {
     const cached=this.propRenderInfo.get(prop);if(cached)return cached;
     const tree=prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm';
+    const wall=objectRegistry.get(prop.kind)?.wall;
     const bounds=tree?this.modelBounds.get(`${prop.kind}-${prop.variant}-lod0`):undefined;
-    const radius=bounds?Math.hypot(bounds.radius,(bounds.top-bounds.bottom)/2)*prop.scale+.8:prop.kind==='rock'?12*prop.scale:prop.kind==='bush'?4*prop.scale:2*prop.scale;
+    const radius=wall?Math.hypot(wall.width/2,wall.height/2,wall.depth/2):bounds?Math.hypot(bounds.radius,(bounds.top-bounds.bottom)/2)*prop.scale+.8:prop.kind==='rock'?12*prop.scale:prop.kind==='bush'?4*prop.scale:2*prop.scale;
     const rockDistance=prop.scale>3.5?900:prop.scale>1.6?520:280;
-    const boundaries=tree?settings.treeLod:prop.kind==='bush'?settings.shrubLod:prop.kind==='rock'||prop.kind==='pebble'?[{distance:radius*this.size[1]/28*settings.rockDetail,width:radius*this.size[1]/70*settings.rockDetail},{distance:radius*this.size[1]/9*settings.rockDetail,width:radius*this.size[1]/30*settings.rockDetail}]:settings.grassLod;
-    const stem=tree?`${prop.kind}-${prop.variant}`:prop.kind==='bush'?`bush-${prop.variant}`:prop.kind==='rock'||prop.kind==='pebble'?`rock-${prop.variant}`:prop.kind==='algae'?'algae-0':`grass-${prop.variant}`;
-    const info:PropRenderInfo={tree,radius,centerY:prop.y+(bounds?(bounds.top+bounds.bottom)/2:prop.kind==='bush'?1.5:.6)*prop.scale,
-      range:tree?settings.treeLod[2].distance+settings.treeLod[2].width/2:prop.kind==='bush'?520:prop.kind==='rock'?rockDistance:prop.kind==='algae'?60:settings.grass,
+    const boundaries=wall?[]:tree?built?settings.treeLod.slice(0,2):settings.treeLod:prop.kind==='bush'?settings.shrubLod:prop.kind==='rock'||prop.kind==='pebble'?[{distance:radius*this.size[1]/28*settings.rockDetail,width:radius*this.size[1]/70*settings.rockDetail},{distance:radius*this.size[1]/9*settings.rockDetail,width:radius*this.size[1]/30*settings.rockDetail}]:settings.grassLod;
+    const stem=wall?`${prop.kind}-0`:tree?`${prop.kind}-${prop.variant}`:prop.kind==='bush'?`bush-${prop.variant}`:prop.kind==='rock'||prop.kind==='pebble'?`rock-${prop.variant}`:prop.kind==='algae'?'algae-0':`grass-${prop.variant}`;
+    const info:PropRenderInfo={tree,radius,centerY:prop.y+(wall?wall.height/2:bounds?(bounds.top+bounds.bottom)/2:prop.kind==='bush'?1.5:.6)*prop.scale,
+      range:wall||tree&&built?settings.trees:tree?settings.treeLod[2].distance+settings.treeLod[2].width/2:prop.kind==='bush'?520:prop.kind==='rock'?rockDistance:prop.kind==='algae'?60:settings.grass,
       boundaries,shadowBoundaries:tree?settings.treeLod.slice(settings.shadowLodOffset,2):boundaries,meshes:Array.from({length:tree?3:boundaries.length+1},(_,i)=>this.meshes.get(`${stem}-lod${i}`)!)};
     this.propRenderInfo.set(prop,info);return info;
   }
@@ -558,7 +577,7 @@ export class IslandRenderer {
     const handoff=quality.treeLod[2];
     this.write(this.farUniform,new Float32Array([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]));
     this.profiler.endStage('distantScenery',stage);stage=this.profiler.mark();
-    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${this.sunElevation}/${this.size.join(',')}/${this.frontToBack}`;
+    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${this.sunElevation}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}`;
     const sceneryChanged=scenerySignature!==this.scenerySignature;
     this.scenerySignature=scenerySignature;
     if(sceneryChanged) {
@@ -594,6 +613,13 @@ export class IslandRenderer {
       }
     }
     }
+    for(const solid of this.buildScene?.placed.query(camera.position[0],camera.position[2],settings.trees)??[]) {
+      const prop=solid.prop,distance=Math.hypot(prop.x-camera.position[0],prop.z-camera.position[2]),info=this.renderInfo(prop,settings,true),x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
+      const inView=distance<=info.range&&sphereInFrustum(viewPlanes,x,y,z,info.radius),caster=distance<settings.shadowCasterRange+info.radius&&sphereInFrustum(lightPlanes,x,y,z,info.radius);
+      if(!inView&&!caster)continue;const values=this.instance(prop,camera);
+      if(inView)for(const entry of lodEntries(distance,info.boundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=rangeFade(distance,info.range);for(const mesh of info.meshes[entry.level])this.append(mesh,values,false,distance);}
+      if(caster)for(const entry of lodEntries(distance,info.shadowBoundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=1;for(const mesh of info.meshes[entry.level+(info.tree?settings.shadowLodOffset:0)])this.append(mesh,values,true);}
+    }
     this.visibleBatches=this.viewBatchGroups.flatMap(m=>[...m.values()].filter(b=>b.count).sort((a,b)=>this.frontToBack?a.nearest-b.nearest:0));
     this.casterBatches=[...this.shadowBatches.values()].filter(b=>b.count);
     }
@@ -608,7 +634,7 @@ export class IslandRenderer {
     };
     const staticChanged=!this.cacheStaticShadows||scenerySignature!==this.staticShadowSignature;
     this.staticShadowSignature=scenerySignature;
-    const staticCaster=(batch:Batch)=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock';
+    const staticCaster=(batch:Batch)=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock'||batch.mesh.material.startsWith('wall-');
     if(staticChanged||this.gpuProfiler?.sampling) {
       const pass=encoder.beginRenderPass({label:'Static sun casters',timestampWrites:this.gpuProfiler?.pass(0),colorAttachments:[],depthStencilAttachment:{view:this.staticShadowTexture.createView(),depthClearValue:1,depthLoadOp:staticChanged?'clear':'load',depthStoreOp:'store'}});
       if(staticChanged) {
@@ -650,6 +676,13 @@ export class IslandRenderer {
       water.setVertexBuffer(0,chunk.water.vertex);water.setVertexBuffer(1,chunk.instance);water.setIndexBuffer(chunk.water.index,chunk.water.indexFormat);water.drawIndexed(chunk.water.count);
     }
     water.end();
+    if(this.buildPreview) {
+      const p=this.buildPreview,prop=p.prop,stem=`${prop.kind}-${prop.variant}`,parts=this.meshes.get(`${stem}-lod0`)!;
+      const values=this.instance(prop,camera);values[8]=1;values[9]=0;values[10]=1;this.write(this.previewInstance,values);
+      const brightness=p.valid?1-p.motion*.3:1;this.write(this.previewUniform,new Float32Array(p.valid?[.10*brightness,.62*brightness,1.7*brightness,1]:[1.8,.075,.045,1]));
+      const pass=encoder.beginRenderPass({label:'Building ghost',colorAttachments:[{view:this.composite.createView(),loadOp:'load',storeOp:'store'}],depthStencilAttachment:{view:this.depth.createView(),depthLoadOp:'load',depthStoreOp:'store'}});
+      pass.setPipeline(this.previewPipeline);pass.setBindGroup(0,this.frameGroup);pass.setBindGroup(2,this.previewGroup);for(const mesh of parts)draw(pass,mesh,this.previewInstance);pass.end();
+    }
     const post = encoder.beginRenderPass({ timestampWrites:this.gpuProfiler?.pass(5),colorAttachments: [{ view: this.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store' }] });
     post.setPipeline(this.postPipeline); post.setBindGroup(0, this.postGroup); post.draw(3); post.end();
     this.gpuProfiler?.resolveInto(encoder);this.device.queue.submit([encoder.finish()]);this.gpuProfiler?.submitted();
@@ -664,6 +697,7 @@ export class IslandRenderer {
     this.meshes.forEach(parts => parts.forEach(m => { m.vertex.destroy(); m.index.destroy(); }));
     if (this.waterMesh) { this.waterMesh.vertex.destroy(); this.waterMesh.index.destroy(); }
     this.oceanInstance?.destroy();
+    this.previewInstance?.destroy();this.previewUniform?.destroy();
     this.viewBatchGroups.forEach(m=>m.forEach(b=>b.buffer.destroy()));this.shadowBatches.forEach(b=>b.buffer.destroy());this.farBatches.forEach(b=>b.buffer.destroy());this.farUniform?.destroy(); this.materialUniforms.forEach(b => b.destroy());
     this.textures.forEach(t => t.destroy()); this.targets.forEach(t => t.destroy());
     this.shadowTexture?.destroy();this.staticShadowTexture?.destroy(); this.uniform?.destroy();this.postUniform?.destroy(); this.context?.unconfigure(); this.device?.destroy();

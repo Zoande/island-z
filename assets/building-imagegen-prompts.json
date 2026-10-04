@@ -1,0 +1,5 @@
+{
+  "tool": "built-in image_gen",
+  "asset": "public/textures/wall-wood-albedo.png",
+  "prompt": "Use case: photorealistic-natural. Asset type: seamless tiling game material base-color texture, square, full bleed. Primary request: a single continuous surface of rough-sawn weathered oak timber for a realistic temperate-island survival game's thin plank walls. Orthographic close-up scanned wood surface, vertical long straight fibers, restrained fine saw marks, a few small subdued knots, dry medium grey-beige brown tones, varied naturally but even overall. Neutral diffuse flat lighting with no baked directional shadows, no highlights, no perspective, no vignette, no border. Seamlessly tile on all four edges with consistent brightness and grain across opposite edges. This is wood grain only; the game mesh provides individual boards. No bark, no plank seams or gaps, no nails, no metal, no mortar, no scenery, no text, no watermark. Photorealistic detailed PBR albedo material."
+}

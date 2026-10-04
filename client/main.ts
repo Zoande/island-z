@@ -8,6 +8,7 @@ import { playerCollider } from './player-colliders';
 import { IslandRenderer } from './renderer';
 import { TerrainStream } from './streaming';
 import {qualityDescriptions,type Quality} from './quality';
+import {BuildingController} from './building';
 
 const canvas=document.querySelector<HTMLCanvasElement>('#world')!;
 const app=document.querySelector<HTMLDivElement>('#app')!;
@@ -25,11 +26,12 @@ app.innerHTML=`
   <div class="caption"><div id="biome" class="biome">Coastal grassland</div></div>
   <div class="vitals" aria-label="Player vitals"><div class="vital-label"><span>Oxygen</span><span id="oxygen-time">60s</span></div><div id="oxygen" class="oxygen" role="progressbar" aria-label="Oxygen" aria-valuemin="0" aria-valuemax="60">${Array.from({length:6},()=>'<i class="bubble"></i>').join('')}</div><div class="vital-label"><span>Stamina</span><span id="stamina-state"></span></div><div id="stamina" class="stamina" role="progressbar" aria-label="Stamina" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
   <div id="respawn-note" class="respawn-note" role="status"></div>
+  <div class="building-hud"><div id="build-hint" class="build-hint" role="status"></div><div id="build-controls" class="build-controls" hidden>Left click place · Wheel fine rotate · R turn 90°</div><nav id="hotbar" class="hotbar" aria-label="Building hotbar"></nav></div>
   <div class="play-hint">Click the landscape to explore</div><div class="reticle"></div>
   <div class="overlay" id="overlay"><div class="eyebrow">A world from a seed</div><h1 id="overlay-title">Finding the island</h1><p id="message">Connecting to the world server…</p><div class="loading-line" id="loading-line"></div><button id="retry" hidden>Retry</button></div>`;
 const get=(id:string)=>document.getElementById(id)!;
 const overlay=get('overlay');
-let renderer:IslandRenderer|undefined,stream:TerrainStream|undefined,camera:PlayerCamera|undefined;
+let renderer:IslandRenderer|undefined,stream:TerrainStream|undefined,camera:PlayerCamera|undefined,building:BuildingController|undefined;
 let animation=0,attempt=0,failed=false;
 const events=new AbortController();
 function fail(message:string) {
@@ -38,7 +40,7 @@ function fail(message:string) {
   get('loading-line').hidden=true;get('retry').hidden=false;overlay.classList.remove('hidden');get('status').textContent='Paused';
   if(document.pointerLockElement===canvas)document.exitPointerLock();
 }
-function dispose() {cancelAnimationFrame(animation);camera?.dispose();stream?.dispose();renderer?.dispose();camera=undefined;stream=undefined;renderer=undefined;}
+function dispose() {cancelAnimationFrame(animation);building?.dispose();camera?.dispose();stream?.dispose();renderer?.dispose();building=undefined;camera=undefined;stream=undefined;renderer=undefined;}
 async function start() {
   const currentAttempt=++attempt;dispose();failed=false;overlay.classList.remove('hidden');
   get('overlay-title').textContent='Finding the island';get('retry').hidden=true;get('loading-line').hidden=false;
@@ -75,16 +77,18 @@ async function start() {
     camera.spawn(spawn[0],world.height(...spawn),spawn[1]);camera.pitch=-.04;
     await renderer.initialize(progress);if(currentAttempt!==attempt||failed)return;
     r.quality=(get('quality')as HTMLSelectElement).value as 'low'|'medium'|'high';r.sunElevation=Number((get('sun')as HTMLInputElement).value);
+    building=new BuildingController(camera,world,r);progress('Loading saved builds');await building.initialize();if(currentAttempt!==attempt||failed)return;
     stream=new TerrainStream(config,r.profiler.enabled);stream.update(camera.position[0],camera.position[2],r.distance);
     get('status').textContent='Preparing';progress('Preparing the shoreline…');
-    const c=camera,s=stream;
-    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,perf:r.profiler,get failed(){return failed;}};
+    const c=camera,s=stream,b=building;
+    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,perf:r.profiler,get failed(){return failed;}};
     let last=performance.now(),lastStream=-Infinity,lastUI=0,fps=0,respawns=0,noteUntil=0;
     const frame=(now:number)=>{
       if(failed||currentAttempt!==attempt)return;
       try {
         const interval=now-last,dt=interval/1000;last=now;r.profiler.begin(interval);
         let stage=r.profiler.mark();c.update(dt);r.profiler.endStage('player',stage);stage=r.profiler.mark();fps=fps*.9+1/Math.max(dt,.001)*.1;
+        b.update(dt);r.profiler.endStage('building',stage);stage=r.profiler.mark();
         if(now-lastStream>350) {s.update(c.position[0],c.position[2],r.distance);lastStream=now;}
         r.profiler.endStage('streaming',stage);
         if(s.error)throw new Error(s.error);
