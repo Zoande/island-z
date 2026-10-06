@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "server": "tsx watch server/index.ts",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/pages-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "benchmark:terrain": "tsx scripts/terrain-benchmark.ts",
@@ -20,7 +20,10 @@
     "check:destruction": "tsx scripts/check-destruction.ts",
     "check:prediction": "tsx scripts/check-prediction.ts",
     "check:solids": "tsx scripts/check-solid-workers.ts",
-    "benchmark:destruction": "tsx scripts/benchmark-destruction.ts"
+    "benchmark:destruction": "tsx scripts/benchmark-destruction.ts",
+    "build:server": "node scripts/build-server.mjs",
+    "start:server": "node dist-server/index.js",
+    "check:multiplayer": "tsx scripts/check-multiplayer.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
@@ -34,6 +37,7 @@
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.2",
     "@webgpu/types": "^0.1.69",
+    "esbuild": "^0.28.2",
     "playwright": "^1.55.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",

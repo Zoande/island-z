@@ -1,8 +1,8 @@
 # Island Z — World Lab
 
-A TypeScript island explorer with a direct WebGPU/WGSL renderer and a placeholder
-first-person capsule controller and shared, persistent building. No game engine or
-multiplayer player simulation is included yet.
+A TypeScript cooperative island explorer with a direct WebGPU/WGSL renderer,
+authoritative player simulation, and persistent building and destruction.
+Players join by nickname with a remembered anonymous browser identity.
 
 ## Run
 
@@ -18,8 +18,9 @@ npm run dev
 
 Open **http://127.0.0.1:5173/** in a desktop browser with WebGPU support. The
 server listens on `127.0.0.1:3001`; Vite proxies `/api` requests to it. Both bind
-to localhost. Production build output is in `dist`; a deployed client will also
-need an `/api` proxy to this server.
+to localhost. Production client output is in `dist`; set `VITE_API_URL` before
+building for a separate API domain. See [Pages and Raspberry Pi deployment](docs/deployment.md)
+and the [multiplayer implementation record](docs/multiplayer-implementation-plan.md).
 
 Click the landscape to capture the mouse. **WASD** moves, **Space** makes a small
 jump, **Shift** sprints, and **Escape** releases the mouse to use settings.
@@ -30,16 +31,15 @@ while swimming forward also keeps you afloat. Settings contains render quality,
 time of day, natural day/night cycling, frame rate and controls.
 The flying camera, vertical flight, wheel speed control and flight diagnostics are removed.
 
-The player is an invisible placeholder capsule: no character model or Blender
-assets are needed. Eye height is 1.968 m, walking speed is 5.175 m/s, sprinting
+Your own capsule is invisible in first person. Other players use simple capsule
+figures with nicknames; contact blocks/slides without stacking. Eye height is 1.968 m, walking speed is 5.175 m/s, sprinting
 tops out at 10.465 m/s with a 4.5 m/s² acceleration ramp, and the jump rises
 about 0.66 meters (30% higher than the original jump). Each takeoff costs 4 stamina
 and insufficient stamina prevents jumping. Gravity, step handling, steep-slope limits, trunk collision
 and sliding run at a fixed 120 Hz. Bush foliage slows movement by 35% rather than
 blocking it. Oak, birch and palm trunks use simple collision volumes sized to the assets.
-Ground collision follows the actual rendered terrain triangles, including chunk
-edges. Nearby terrain is prioritized; movement waits if its collision surface
-has not loaded. Nearby rocks use the full-detail surface with the same scale,
+Ground collision uses canonical full-detail terrain triangles independently
+of rendering tiles and quality. Nearby rocks use the full-detail surface with the same scale,
 rotation and burial as the visible mesh. The capsule stops/slides at steep rock
 faces, steps across low slabs, and can jump onto suitable surfaces or fall off
 their edges. Decorative pebbles and algae remain non-solid. Swimming uses the
@@ -58,7 +58,7 @@ allows about nine minutes of continuous lake swimming or nearly five minutes in
 the ocean. Exhaustion prevents sprinting and makes swimmers sink despite holding
 Space, so long open-ocean swims can end in drowning. Idle sinking is intentionally
 slower than diving. Vitals use elapsed time even if collision terrain is loading.
-Fall damage and multiplayer player simulation are later work.
+Player movement and vitals are server-authoritative; no fall damage is added.
 
 ## Building
 
@@ -147,17 +147,16 @@ maps for every torch; natural scenery still casts sun/moon shadows.
 Placement appears locally before confirmation. The server recomputes support,
 ray visibility, snapping and overlap using shared rules, and saves accepted
 objects before responding. Rejections undo the placement (and dependent pending
-walls). Retries cannot duplicate confirmed objects. Nearby saved builds refresh
-every two seconds so other clients see them. Placement is unlimited and open to
+walls). Nearby changes arrive over WebSocket; bulk regions load on entry or
+reconnect. Placement is unlimited and open to
 everyone; no ownership, resource costs or removal is added. Terrain changes are
 limited to the small saved floor excavation stamps.
 
-Saves are append-only journals in `server/saves/`, excluded from Git.
-`BUILD_SAVE_DIR` overrides this directory. Seed, size and generator version
-identify separate worlds, preserving older saves. A trailing interrupted write
-is preserved in a recovery file while complete records reload; corrupt complete
-records produce a clear server error. See [building foundations](docs/building.md)
-for the registry, protocol, persistence and extension points.
+The unified binary world journal defaults to `server/saves/`, excluded from Git.
+`WORLD_SAVE_DIR` overrides it. Edits become durable before acknowledgment;
+positions/stamina/oxygen save periodically and on disconnect. Incomplete final
+frames recover, while complete checksum failures stop loading. The former test
+save was deleted; old saves are unsupported. See [building foundations](docs/building.md).
 
 ## World settings
 
@@ -180,9 +179,9 @@ server port. Update the Vite proxy if changing the port.
 Generation is on demand: a larger island does **not** allocate or generate its
 whole area on startup. Draw distance controls the working set. The server's
 `GET /api/world` supplies the seed, size, and generator version; `GET /api/health`
-reports readiness. `GET /api/builds` streams requested build regions and
-`POST /api/builds` validates placements. The server uses local save files and
-has no authentication or multiplayer player simulation.
+reports readiness. Joined clients load binary regions through `GET /api/builds`
+and send input/build/destruction commands through WSS `/api/events`. The server
+derives player state and saves locally. There is no sign-in or verified identity.
 
 ## Terrain and rendering
 
@@ -375,22 +374,14 @@ In development, `window.__island` exposes player/camera/world/stream/renderer di
 for inspection. It is omitted from production builds. Browser visual and GPU
 checks also use the Playwright profiler above. Inspect beaches, forests, ridges, steep rock placement, and
 quality changes, and check the console for rendering errors.
-`npx tsx scripts/check-swimming.ts` checks real keyboard sprint/ascent/dive,
-ocean and elevated-lake swimming, underwater quality changes and drowning reset
-in Chrome on this PC, saving screenshots and a report under `artifacts`.
-`npx tsx scripts/check-building.ts` checks keyboard selection/cycling, fine and
-90-degree rotation, previews, optimistic rollback, confirmed movement collision,
-shared build updates and server-restart persistence. It uses isolated temporary
-saves and leaves the game's real builds untouched.
-
-`npx tsx scripts/check-daylight.ts` checks time presets, pause/resume and reload
-persistence, real torch hotbar/placement input, saved torches, nearby wall light
-occlusion, graphics presets, and day/dusk/night/ocean views on this PC. It uses
-an isolated server/save directory and writes screenshots and a report to `artifacts`.
-
-`npx tsx scripts/check-catalogue.ts` validates catalogue cycling, bounded floor
-excavation, automatic wall openings and rollback, functional doors, furniture,
-wall lights, connected roofs, new materials, and restart saves in Chrome.
+Run `npm run check:multiplayer` for the current isolated single-client Chrome
+check: joining, movement, placement, cutting, and remembered reload. Reports and
+screenshots go under `artifacts`. The retained building/daylight/catalogue and
+destruction/prediction browser command names delegate to this smoke harness;
+their former larger scenarios are not current verification. Swimming, catalogue,
+daylight and support rules remain covered by unit tests. Older direct-camera
+teleport helpers do not move the authoritative player. No live two-player or
+ten-player test is run.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 

@@ -1,3 +1,5 @@
+import {apiURL} from './api';
+import {MultiplayerClient} from './multiplayer';
 import './style.css';
 import { GENERATOR_VERSION, parseWorldConfig, type WorldDescriptor } from '../shared/config';
 import { WorldGenerator } from '../shared/world';
@@ -19,6 +21,7 @@ app.innerHTML=`
   <section class="panel collapsed" aria-label="Settings"><button class="panel-head" aria-expanded="false"><span>Settings & controls</span><span id="collapse">+</span></button>
     <div class="panel-body"><hr class="rule"/>
     <div class="meta-row"><label>Frame rate</label><span id="fps" class="value">—</span></div>
+    <div class="meta-row" id="network-debug" hidden><label>Network</label><span id="network-stats" class="value"></span></div>
     <div class="field"><label for="daylight-time">Time of day <span id="daylight-value">09:00</span></label><input id="daylight-time" type="range" min="0" max="23.983333" step="0.016666667" value="9" aria-label="Time of day"/></div>
     <label class="cycle-toggle"><input id="daylight-auto" type="checkbox" checked/> Natural day/night cycle</label>
     <div class="daylight-presets"><button type="button" data-hour="6.5">Dawn</button><button type="button" data-hour="12">Noon</button><button type="button" data-hour="0">Night</button></div>
@@ -34,6 +37,7 @@ app.innerHTML=`
   <div class="play-hint">Click the landscape to explore</div><div class="reticle"></div>
   <div class="overlay" id="overlay"><div class="eyebrow">A world from a seed</div><h1 id="overlay-title">Finding the island</h1><p id="message">Connecting to the world server…</p><div class="loading-line" id="loading-line"></div><button id="retry" hidden>Retry</button></div>`;
 const get=(id:string)=>document.getElementById(id)!;
+get('network-debug').hidden=!new URLSearchParams(location.search).has('netdebug');
 const overlay=get('overlay');
 const clockNow=()=>Date.now()/1000;
 const daylightStorage='island-z-daylight-v1';
@@ -47,6 +51,7 @@ function daylightUI() {
 }
 saveDaylight();daylightUI();
 let renderer:IslandRenderer|undefined,stream:TerrainStream|undefined,camera:PlayerCamera|undefined,building:BuildingController|undefined;
+let multiplayer:MultiplayerClient|undefined;
 let animation=0,attempt=0,failed=false;
 const events=new AbortController();
 function fail(message:string) {
@@ -55,7 +60,7 @@ function fail(message:string) {
   get('loading-line').hidden=true;get('retry').hidden=false;overlay.classList.remove('hidden');get('status').textContent='Paused';
   if(document.pointerLockElement===canvas)document.exitPointerLock();
 }
-function dispose() {cancelAnimationFrame(animation);building?.dispose();camera?.dispose();stream?.dispose();renderer?.dispose();building=undefined;camera=undefined;stream=undefined;renderer=undefined;}
+function dispose() {cancelAnimationFrame(animation);multiplayer?.dispose();multiplayer=undefined;building?.dispose();camera?.dispose();stream?.dispose();renderer?.dispose();building=undefined;camera=undefined;stream=undefined;renderer=undefined;}
 async function start() {
   const currentAttempt=++attempt;dispose();failed=false;overlay.classList.remove('hidden');
   get('overlay-title').textContent='Finding the island';get('retry').hidden=true;get('loading-line').hidden=false;
@@ -63,7 +68,7 @@ async function start() {
   try {
     progress('Connecting to the world server…');
     let response:Response;
-    try {response=await fetch('/api/world',{signal:AbortSignal.timeout(6000),cache:'no-store'});}
+    try {response=await fetch(apiURL('/api/world'),{signal:AbortSignal.timeout(6000),cache:'no-store'});}
     catch {throw new Error('Cannot reach the world server. Start npm run server in another terminal, then retry.');}
     if(!response.ok)throw new Error('The world server did not return a world. Start npm run server and check its terminal output.');
     const descriptor=await response.json()as WorldDescriptor,config=parseWorldConfig(descriptor);
@@ -72,7 +77,7 @@ async function start() {
     renderer=new IslandRenderer(canvas,config,world);renderer.onFatal=fail;
     const r=renderer;
     if(new URLSearchParams(location.search).has('profile'))r.profiler.start();
-    camera=new PlayerCamera(canvas,{surface:(x,z)=>r.collisionSurface(x,z),colliders:(x,z)=>r.playerColliders(x,z),water:(x,z)=>world.surfaceWater(x,z,performance.now()/1000),solidMovement:(...args)=>building?.destruction.movement(...args)??null});
+    camera=new PlayerCamera(canvas,{surface:(x,z)=>r.collisionSurface(x,z),colliders:(x,z)=>r.playerColliders(x,z),water:(x,z)=>world.surfaceWater(x,z,performance.now()/1000),solidMovement:undefined});
     // Start at a dry, gentle coast, with room around nearby trunks and shrubs.
     const spawnX=config.islandSizeMeters*.08;
     let inner=0,outer=config.islandSizeMeters*.5;
@@ -92,22 +97,22 @@ async function start() {
     camera.spawn(spawn[0],world.height(...spawn),spawn[1]);camera.pitch=-.04;
     await renderer.initialize(progress);if(currentAttempt!==attempt||failed)return;
     r.quality=(get('quality')as HTMLSelectElement).value as 'low'|'medium'|'high';r.daylightHour=daylight.hour(clockNow());
-    building=new BuildingController(camera,world,r);progress('Loading saved builds');await building.initialize();if(currentAttempt!==attempt||failed)return;
+    multiplayer=new MultiplayerClient(config,camera,r);progress('Joining the world');await multiplayer.ready;building=new BuildingController(camera,world,r,multiplayer.transport);building.network=multiplayer;multiplayer.attach(building);progress('Loading saved builds');await building.initialize();if(currentAttempt!==attempt||failed)return;
     stream=new TerrainStream(config,r.profiler.enabled);stream.update(camera.position[0],camera.position[2],r.distance);
     get('status').textContent='Preparing';progress('Preparing the shoreline…');
     const c=camera,s=stream,b=building;
-    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,daylight,perf:r.profiler,get failed(){return failed;}};
+    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,multiplayer,daylight,perf:r.profiler,get failed(){return failed;}};
     let last=performance.now(),lastStream=-Infinity,lastUI=0,fps=0,respawns=0,noteUntil=0;
     const frame=(now:number)=>{
       if(failed||currentAttempt!==attempt)return;
       try {
         const interval=now-last,dt=interval/1000;last=now;r.profiler.begin(interval);
-        let stage=r.profiler.mark();c.update(dt);r.profiler.endStage('player',stage);stage=r.profiler.mark();fps=fps*.9+1/Math.max(dt,.001)*.1;
+        let stage=r.profiler.mark();multiplayer!.update();r.profiler.endStage('player',stage);stage=r.profiler.mark();fps=fps*.9+1/Math.max(dt,.001)*.1;
         b.update(dt);r.profiler.endStage('building',stage);stage=r.profiler.mark();
         if(now-lastStream>350) {s.update(c.position[0],c.position[2],r.distance);lastStream=now;}
         r.profiler.endStage('streaming',stage);
         if(s.error)throw new Error(s.error);
-        r.daylightHour=daylight.hour(clockNow());r.render(c,s,now/1000);
+        r.daylightHour=daylight.hour(clockNow());r.render(c,s,multiplayer!.worldTime);
         const player=c.character;
         if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;get('respawn-note').textContent='Out of oxygen — returned to shore';}
         if(now>noteUntil)get('respawn-note').textContent='';
@@ -119,7 +124,8 @@ async function start() {
         if(c.character.ready&&!failed)overlay.classList.add('hidden');
         if(now-lastUI>300) {
           daylightUI();
-          lastUI=now;get('status').textContent=c.character.ready?'Exploring':'Preparing';get('fps').textContent=`${Math.round(fps)} fps`;
+          lastUI=now;get('status').textContent=!multiplayer!.connected?'Reconnecting':c.character.ready?'Exploring':'Preparing';get('fps').textContent=`${Math.round(fps)} fps`;
+          const net=multiplayer!.metrics;get('network-stats').textContent=`${Math.round(net.rtt)} ms / ${net.snapshotHz.toFixed(0)} Hz / ${net.correction.toFixed(2)} m`;
           const sample=world.sample(c.position[0],c.position[2]),water=world.water.sample(c.position[0],c.position[2]);
           get('biome').textContent=water&&water.bank>.6?water.kind==='lake'?'Inland lake':'Flowing stream'
             :sample.height<0?'Ocean shore':sample.height<7?'Sandy coast':sample.weights[3]>.45?'Rocky highlands':sample.forest>.5?'Temperate forest':'Open grassland';

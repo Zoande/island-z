@@ -1,0 +1,42 @@
+import {parentPort,workerData} from 'node:worker_threads';
+import {mkdirSync,existsSync,readFileSync,openSync,closeSync,writeSync,fsyncSync,renameSync,ftruncateSync,statSync,unlinkSync} from 'node:fs';
+import {join} from 'node:path';
+import {createHash} from 'node:crypto';
+import {gzipSync,gunzipSync} from 'node:zlib';
+import {encodeMessage,decodeMessage} from '../shared/network';
+import {solidCells} from '../shared/destruction';
+const {directory,worldKey}=workerData;mkdirSync(directory,{recursive:true});
+const cache=join(directory,'cells');mkdirSync(cache,{recursive:true});const cellIndex=new Map<string,Set<string>>();const objects=new Map<string,any>(),solids=new Map<string,{file:string;keys:string[];revision:number;active:boolean;removed:boolean}>(),players=new Map<string,any>(),leveling=new Map<string,any>(),openings=new Map<string,any>(),receipts=new Map<string,any>(),support=new Map<string,any>();let revision=0;
+function cell(x:number,z:number){return Math.floor(x/512)+':'+Math.floor(z/512);}
+function project(commit:any){
+ if(commit.object)objects.set(commit.object.id,commit.object);
+ for(const p of commit.players??[])players.set(p.id,p);
+ if(commit.analysis)support.set(commit.analysis.targetId,commit.analysis);if(commit.completeSupport)support.delete(commit.completeSupport);
+ if(commit.requestId&&commit.result){receipts.set(commit.requestId,{kind:'support',requestId:commit.requestId,fingerprint:commit.receiptFingerprint??commit.fingerprint,result:commit.result});while(receipts.size>512)receipts.delete(receipts.keys().next().value!);}
+ if(commit.patch){revision=Math.max(revision,commit.patch.revision);for(const id of commit.patch.removedBuilds)objects.delete(id);for(const o of commit.patch.leveling)leveling.set(o.id,o);for(const o of commit.patch.openings)openings.set(o.id,o);for(const r of commit.patch.solids)archive(r,commit.patch.revision);}
+ for(const m of commit.motion??[]){const entry=solids.get(m.id);if(entry){const r=readFrames(entry.file)[0];if(r.revision===m.revision)archive({...r,pose:m.pose,fall:m.fall},entry.revision);}}
+}
+function archive(r:any,worldRevision:number){const file=join(cache,worldKey+'-'+createHash('sha256').update(r.id).digest('hex').slice(0,32)+'.bin');const f=openSync(file+'.tmp','w');try{writeAll(f,frame(r));}finally{closeSync(f);}renameSync(file+'.tmp',file);for(const key of solids.get(r.id)?.keys??[]){const ids=cellIndex.get(key);ids?.delete(r.id);if(!ids?.size)cellIndex.delete(key);}const keys=solidCells(r);for(const key of keys){let ids=cellIndex.get(key);if(!ids){ids=new Set();cellIndex.set(key,ids);}ids.add(r.id);}solids.set(r.id,{file,keys,revision:worldRevision,active:!!r.fall&&!r.fall.settled&&!r.removed,removed:!!r.removed});}
+function readCells(keys:string[],maxRevision:number){const ids=new Set(keys.flatMap(key=>[...cellIndex.get(key)??[]]));return [...ids].map(id=>solids.get(id)!).filter(e=>e.revision<=maxRevision).map(e=>readFrames(e.file)[0]);}
+function boot(){const records=load();for(const record of records)project(record);const keys=new Set<string>();for(const p of players.values()){const [x,,z]=p.state.feet;for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)keys.add(cell(x+dx*512,z+dz*512));}const initial=[...solids.values()].filter(e=>e.active||e.keys.some(k=>keys.has(k))).map(e=>readFrames(e.file)[0]);return [...objects.values()].map<any>(object=>({kind:'build',object})).concat([{kind:'edit',patch:{revision,solids:initial,removedBuilds:initial.filter(r=>r.removed).map(r=>r.id),leveling:[...leveling.values()],openings:[...openings.values()]}},{kind:'players',players:[...players.values()]}],[...receipts.values()],[...support.values()].map(analysis=>({kind:'support',analysis})));}
+const head=join(directory,worldKey+'.world-head.json');let generation=0,cursor=0,fd:number|undefined;
+let log=join(directory,worldKey+'.world-0.bin');
+function syncDirectory(){if(process.platform==='win32')return;const d=openSync(directory,'r');try{fsyncSync(d);}finally{closeSync(d);}}
+function writeAll(file:number,bytes:Uint8Array){let offset=0;while(offset<bytes.length){const n=writeSync(file,bytes,offset,bytes.length-offset);if(!n)throw new Error('Incomplete journal write');offset+=n;}}
+function frame(value:unknown){const payload=gzipSync(encodeMessage(value));if(payload.length>64*1024*1024)throw new Error('Transaction exceeds persistence limit');const header=Buffer.alloc(36);header.writeUInt32LE(payload.length);createHash('sha256').update(payload).digest().copy(header,4);return Buffer.concat([header,payload]);}
+function readFrames(path:string,recover=false):any[]{if(!existsSync(path))return [];const bytes=readFileSync(path),records=[];let offset=0;
+ while(offset<bytes.length){const start=offset;if(bytes.length-offset<36){if(recover)break;throw new Error('Truncated checkpoint');}const n=bytes.readUInt32LE(offset);if(n>64*1024*1024)throw new Error('Invalid journal frame size');offset+=36;if(bytes.length-offset<n){offset=start;if(recover)break;throw new Error('Truncated checkpoint payload');}const payload=bytes.subarray(offset,offset+n);if(!createHash('sha256').update(payload).digest().equals(bytes.subarray(start+4,start+36)))throw new Error('Journal checksum mismatch');records.push(decodeMessage(gunzipSync(payload,{maxOutputLength:256*1024*1024}),256*1024*1024));offset+=n;}
+ if(offset<bytes.length&&recover){const f=openSync(path,'r+');try{ftruncateSync(f,offset);fsyncSync(f);}finally{closeSync(f);}}
+ return records;
+}
+function load(){let records:any[]=[];if(existsSync(head)){const m=JSON.parse(readFileSync(head,'utf8'));if(m.schema!==1||m.worldKey!==worldKey||!Number.isSafeInteger(m.generation)||m.generation<0)throw new Error('Incompatible world save');generation=m.generation;cursor=m.cursor;const snapshot=readFrames(join(directory,worldKey+'.world-'+generation+'.snapshot'));if(snapshot.length!==1)throw new Error('Missing world checkpoint');records=snapshot[0].commits;log=join(directory,worldKey+'.world-'+generation+'.bin');}
+ const tail=readFrames(log,true);for(const r of tail){if(r.schema!==1||r.worldKey!==worldKey||r.cursor!==cursor+1)throw new Error('Invalid world journal sequence');cursor=r.cursor;records.push(r.commit);}fd=openSync(log,'a');syncDirectory();return records;
+}
+let failed:string|undefined;
+parentPort!.on('message',m=>{try{if(failed)throw new Error(failed);let value;
+ if(m.type==='load')value=load();else if(m.type==='loadWorld')value=boot();else if(m.type==='cells')value=readCells(m.value.keys,m.value.revision);
+ else if(m.type==='append'){if(fd===undefined)throw new Error('Journal not loaded');const old=statSync(log).size;try{writeAll(fd,frame({schema:1,worldKey,cursor:cursor+1,commit:m.value}));fsyncSync(fd);}catch(e){ftruncateSync(fd,old);fsyncSync(fd);throw e;}cursor++;try{project(m.value);}catch(e){failed='Committed journal projection failed; restart to recover';throw new Error(failed,{cause:e});}}
+ else if(m.type==='checkpoint'){const next=generation+1,snapshot=join(directory,worldKey+'.world-'+next+'.snapshot'),temp=snapshot+'.tmp',s=openSync(temp,'w');try{const commits=[...objects.values()].map<any>(object=>({kind:'build',object})).concat([{kind:'edit',patch:{revision,solids:[...solids.values()].map(e=>readFrames(e.file)[0]),removedBuilds:[...solids.entries()].filter(([,e])=>e.removed).map(([id])=>id),leveling:[...leveling.values()],openings:[...openings.values()]}},{kind:'players',players:[...players.values()]}],[...receipts.values()],[...support.values()].map(analysis=>({kind:'support',analysis})));writeAll(s,frame({commits:solids.size||objects.size||players.size?commits:m.value}));fsyncSync(s);}finally{closeSync(s);}renameSync(temp,snapshot);const newLog=join(directory,worldKey+'.world-'+next+'.bin'),newFd=openSync(newLog,'w');fsyncSync(newFd);const h=openSync(head+'.tmp','w');try{writeAll(h,Buffer.from(JSON.stringify({schema:1,worldKey,generation:next,cursor})));fsyncSync(h);}finally{closeSync(h);}renameSync(head+'.tmp',head);syncDirectory();if(fd!==undefined)closeSync(fd);const previous=log;log=newLog;fd=newFd;generation=next;if(existsSync(previous))unlinkSync(previous);const oldSnapshot=join(directory,worldKey+'.world-'+(next-1)+'.snapshot');if(existsSync(oldSnapshot))unlinkSync(oldSnapshot);}
+ else if(m.type==='flush'&&fd!==undefined)fsyncSync(fd);
+ parentPort!.postMessage({id:m.id,value});
+ }catch(error){parentPort!.postMessage({id:m.id,error:error instanceof Error?error.message:String(error)});}});

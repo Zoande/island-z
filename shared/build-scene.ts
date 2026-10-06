@@ -56,7 +56,7 @@ export class BuildScene {
       shape={kind:'hull',points,center:[prop.x,(collider.bottom+collider.top)/2,prop.z]};
     }else shape={kind:'cylinder',center:[prop.x,(collider.top+collider.bottom)/2,prop.z],radius:collider.radius,halfHeight:(collider.top-collider.bottom)/2};
     let colliders=boxes??[collider],shapes=boxes?boxes.map(c=>boxShape([c.x,(c.bottom+c.top)/2,c.z],[c.wall!.halfWidth,(c.top-c.bottom)/2,c.wall!.halfDepth],c.wall!.yaw)):[shape];
-    const cooked=this.damageCollision.get(id);if(cooked&&cooked.revision===this.edits.get(id)?.revision){shapes=cooked.shapes;colliders=cooked.colliders;}return {id,prop,collider,shape,colliders,shapes,object,record:this.edits.get(id)};
+    const cooked=this.damageCollision.get(id);if(cooked&&cooked.revision===this.edits.get(id)?.revision&&prop.aperture===this.placed.get(id)?.prop.aperture){shapes=cooked.shapes;colliders=cooked.colliders;}return {id,prop,collider,shape,colliders,shapes,object,record:this.edits.get(id)};
   }
   naturalAt(x:number,z:number,radius:number):BuildSolid[] {
     const result:BuildSolid[]=[];

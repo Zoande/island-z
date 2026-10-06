@@ -8,6 +8,7 @@ const depthCompare=process.argv[3]==='depth-compare';
 const compare=process.argv[3]==='compare'||depthCompare;
 const browser=await chromium.launch({channel:'chrome',headless:true,args:['--enable-unsafe-webgpu','--ignore-gpu-blocklist']});
 const page=await browser.newPage({viewport:{width:1600,height:900}}),errors:string[]=[];
+page.on('dialog',d=>d.accept('Profiler'));
 page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 try {
   const began=Date.now();await page.goto('http://127.0.0.1:5173/?profile=1');

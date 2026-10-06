@@ -23,9 +23,8 @@ terrain, a rock ID, or a wall/floor/roof ID plus an edge/top/mount/opening socke
 Doors additionally save optional `state: {open: boolean}`. Objects have no
 owner, inventory, durability or resource state in this pass.
 
-Keep existing registry IDs stable. Save schema version 1 is independent of the
-terrain generator version. Changes to saved formats or existing asset/collision
-dimensions need an explicit migration rather than silently moving old builds.
+The new journal has no legacy save importer. Protocol/generator changes must
+be made deliberately when changing source or collision contracts.
 Adding an object within an existing family uses a registry definition, variants,
 GPU assets/materials, and its physical dimensions. A new family should supply its
 support/collision/render behavior at those extension points; do not add new
@@ -38,8 +37,8 @@ same globally aligned two-meter triangles as full-detail terrain, keeps bounded
 height/generated-scenery caches, and indexes placed collision bounds in spatial
 cells. `shared/object-colliders.ts` centralizes physical model dimensions.
 `shared/build-placement.ts` performs the same raycast and rules for previews and
-server validation. The renderer's streamed terrain continues to drive player
-ground contact; building transforms stay canonical and do not shift with LOD.
+server validation. Canonical terrain drives both server and client movement; rendering LOD does
+not choose ground collision.
 
 Trunks/bushes use vertical volumes; rocks use convex full-detail hulls for
 placement, with their full-detail upper triangles for movement/support. Thin
@@ -76,9 +75,8 @@ intersect water, have substantial burial, or bridge large unsupported ground gap
 Reach, visible first ray hit, standing state, self-intersection, variants,
 finite coordinates and expected transforms are validated. The server derives
 position/support from the intent rather than accepting arbitrary object data.
-There is no authoritative player simulation yet: eye/feet/standing come from
-the client and are checked against world geometry. Replace these pose claims
-with server player state when multiplayer movement is implemented.
+The authority derives eye/feet/standing from its simulated player. Commands
+carry their input sequence; client pose fields do not authorize placement.
 
 ## Optimistic state and transport
 
@@ -92,40 +90,24 @@ reconcile a placement whose acknowledgment was lost.
 Confirmed local objects remain overlaid until a sufficiently recent snapshot
 contains their ID, preventing an older in-flight response from making them
 disappear. Region revisions prevent stale batches overwriting newer batches.
-The `BuildTransport` interface isolates HTTP polling from input/placement so a
-later event transport can replace it without changing those rules.
+The `BuildTransport` delegates to the network/simulation worker. WSS
+`/api/events` carries joined commands and reliable edits. Binary HTTPS baselines
+require a connection handle, subscription generation and at most sixteen 512 m
+cells per request. Loads occur on region entry and reconnect. Per-object versions
+and buffered newer events prevent stale region responses overwriting edits.
 
-`GET /api/builds?cells=cx:cz,...&since=revision` accepts up to 64 ownership cells
-per request. Ownership cells are 512 meters; a bounding spatial index covers
-cross-cell collision extents. An unchanged revision returns an empty unchanged
-response. Clients request only a quality-dependent nearby radius, cache those
-cells, and evict others. Snapshots refresh every two seconds. Save objects are
-not coupled to terrain chunk regeneration.
-
-`POST /api/builds` accepts a `BuildRequest`: request ID, world key, definition,
-variant, requested rotation, eye/direction, feet/standing, and expected preview
-transform/support. Success returns the canonical object and world revision;
-failure returns an error code/reason. Requests are limited to 8 KiB. Reusing a
-confirmed ID with a different request is rejected. Repeating an identical
-confirmed request returns its existing object without another journal record.
-The world key prevents stale clients placing into a changed server world.
-
-The same POST endpoint accepts `DoorRequest` with `action: 'door'`, object ID,
-desired open state, request ID, world key, eye and direction. F requires a visible
-door within 3 m. Shared validation tests the full quarter-turn sweep against the
-local player and scenery/builds before applying an optimistic state change.
-The durable journal appends an `action: 'door'` update with the existing object
-ID and a new request ID. Schema-1 placement records remain valid; replay updates
-the object and rebuilds derived openings/colliders without moving its anchor.
+Door commands use the same ordered connection. F toggles a visible nearby door;
+existing sweep/overlap rules remain shared. A door/window in a damaged wall and
+the parent aperture commit in one transaction. Repeated stable request IDs use
+bounded saved receipts; changed payloads cannot reuse a receipt.
 
 ## Persistence and rendering
 
-`server/build-store.ts` indexes confirmed objects and appends successful actions
-to a per-world JSONL journal. It flushes the journal before success, then updates
-memory. Startup reconstructs objects, connections, revisions and retry receipts.
-An interrupted final line is preserved separately and removed from the journal;
-corrupt completed records fail loading instead of silently discarding builds.
-Files are namespaced by seed, size and generator version. The destruction action endpoint removes builds and retains independent openings and floor grading; see [destruction](destruction.md).
+`server/build-store.ts` contains in-memory placement rules. The unified journal
+worker owns compression, checksums, flushed records and atomic checkpoints for
+builds, openings, grading, edits and remembered players. See
+[the multiplayer record](multiplayer-implementation-plan.md) and
+[deployment/recovery](deployment.md). No old JSONL save loader remains.
 
 Rendering reuses static meshes, named materials, instance batches, LOD fading,
 frustum culling and shadow caches. Placed trees retain distant low-detail geometry
@@ -141,13 +123,9 @@ the preview buffers along with ordinary GPU resources.
 
 ## Checks
 
-`npm test` covers placement, convex separation, full footprint support, wall
-collisions, snapping/stacking, idempotent retries, conflicting requests, journal
-reload and interrupted-write recovery. `npm run build` checks all TypeScript and
-the production bundle. `npx tsx scripts/check-building.ts` exercises real Chrome
-input, GPU rendering, rollback, collision, remote snapshots, stacked-wall
-rotation locking and restart saves
-against an isolated server; screenshots/reports go under `artifacts`.
-`npx tsx scripts/check-catalogue.ts` adds Q/E/reselection, optimistic floor cuts,
-door-opening rollback, door walking and persistence, wall-mounted lights,
-connected roofs, furniture, every new wall material and automatic windows.
+`npm test` covers placement, collision, support, retry and transaction rules.
+`npm run build` checks TypeScript, client bundles and Pages asset sizes.
+`npm run build:server` builds the production Node workers.
+`npm run check:multiplayer` checks one Chrome client against an isolated server.
+The old building/catalogue browser entry points delegate to that smoke harness;
+they do not claim their previous multi-scenario coverage.

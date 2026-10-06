@@ -1,4 +1,4 @@
-import {objectDefinition,objectRegistry,type BuildObject} from './object-registry';
+import {objectDefinition,objectRegistry,buildCell,type BuildObject} from './object-registry';
 import {orientation,rotate} from './placement';
 import {ROCK_RINGS,ROCK_SEGMENTS,type Point3} from './rocks';
 import type {Prop} from './world';
@@ -7,15 +7,15 @@ import {OPENINGS} from './build-parts';
 
 export const DESTRUCTION={reach:4,intervalMs:250,playerPower:1,repairRadius:.16,repairDepth:.12,version:1};
 export interface SolidRecord {id:string;prop:Prop;source:SolidSource;volume:VolumeState;revision:number;removed?:boolean;object?:BuildObject;opening?:'door'|'window';fragmentOf?:string;fragmentBounds?:[Point3,Point3];pose?:{position:Point3;rotation:[number,number,number,number]};fall?:{velocity:Point3;angular:Point3;started:number;settled?:number;persistent:boolean;split?:boolean;impactSpeed?:number};}
-export interface WorldAction {action:'cut'|'repair'|'dismantle';requestId:string;worldKey:string;sessionId:string;targetId:string;targetRevision:number;eye:Point3;direction:Point3;feet:Point3;prediction?:string}
-export interface WorldPatch {revision:number;actionId?:string;solids:SolidRecord[];removedBuilds:string[];leveling:BuildObject[];openings:{id:string;kind:'door'|'window'|null}[]}
+export interface WorldAction {action:'cut'|'repair'|'dismantle';requestId:string;worldKey:string;sessionId:string;targetId:string;targetRevision:number;eye:Point3;direction:Point3;feet:Point3;prediction?:string;actionTime?:number}
+export interface WorldPatch {revision:number;objects?:BuildObject[];actionId?:string;solids:SolidRecord[];removedBuilds:string[];leveling:BuildObject[];openings:{id:string;kind:'door'|'window'|null}[]}
 export type ActionResult={ok:true;patch:WorldPatch;requestId:string}|{ok:false;code:string;error:string};
 export type ActionAcknowledgement={ok:true;requestId:string;ack:{revision:number;targetId:string;targetRevision:number;prediction:string}};
 export type ActionReply=ActionResult|ActionAcknowledgement;
 /** A comparison hint only: authority still derives and validates the edit.
  * Canonical brick order makes the digest independent of generation order. */
 export function predictionDigest(record:SolidRecord):string{
-  const state=record.volume,text=JSON.stringify([record.revision,record.opening??null,!!record.removed,Object.keys(state.bricks).sort().map(k=>[k,state.bricks[k]]),state.clips??[],state.mask?Object.keys(state.mask).sort().map(k=>[k,state.mask![k]]):null]);
+  const state=record.volume,text=JSON.stringify([record.revision,record.opening??null,!!record.removed,Object.keys(state.bricks).sort().map(k=>[k,Array.from(state.bricks[k])]),state.clips??[],state.mask?Object.keys(state.mask).sort().map(k=>[k,state.mask![k]]):null]);
   let a=2166136261,b=2246822519;for(let i=0;i<text.length;i++){const c=text.charCodeAt(i);a=Math.imul(a^c,16777619);b=Math.imul(b^c,3266489917);}return (a>>>0).toString(16).padStart(8,'0')+(b>>>0).toString(16).padStart(8,'0');
 }
 export function predictionReply(result:ActionResult,hint?:string):ActionReply{
@@ -32,6 +32,13 @@ export function destructionRule(p:Prop){return isTree(p)?objectDefinition('tree'
 export function quaternion(r:Pick<SolidRecord,'prop'|'pose'>):[number,number,number,number]{return r.pose?.rotation??orientation(r.prop.normal??[0,1,0],r.prop.rotation);}
 export function localPoint(r:Pick<SolidRecord,'prop'|'pose'>,p:Point3):Point3{const q=quaternion(r),o=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z],v=rotate(p.map((n,i)=>(n-o[i])/r.prop.scale)as Point3,[-q[0],-q[1],-q[2],q[3]]);return v;}
 export function worldPoint(r:Pick<SolidRecord,'prop'|'pose'>,p:Point3):Point3{const v=rotate(p.map(n=>n*r.prop.scale)as Point3,quaternion(r)),o=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z];return v.map((n,i)=>n+o[i])as Point3;}
+/** Include every coarse cell touched by an object's world bounds, plus its source cell. */
+export function solidCells(r:Pick<SolidRecord,'prop'|'pose'|'source'>):string[]{
+ const corners:Point3[]=[];for(const x of r.source.bounds.map(b=>b[0]))for(const y of r.source.bounds.map(b=>b[1]))for(const z of r.source.bounds.map(b=>b[2]))corners.push(worldPoint(r,[x,y,z]));
+ const xs=corners.map(p=>p[0]),zs=corners.map(p=>p[2]),keys=new Set([buildCell(r.prop.x,r.prop.z)]);
+ for(let z=Math.floor((Math.min(...zs)-.5)/512);z<=Math.floor((Math.max(...zs)+.5)/512);z++)for(let x=Math.floor((Math.min(...xs)-.5)/512);x<=Math.floor((Math.max(...xs)+.5)/512);x++)keys.add(`${x}:${z}`);
+ return [...keys];
+}
 export function localDirection(r:Pick<SolidRecord,'prop'|'pose'>,p:Point3):Point3{const q=quaternion(r);return rotate(p,[-q[0],-q[1],-q[2],q[3]]);}
 export function sourceFor(prop:Prop,rocks:Point3[][]):SolidSource {
   const d=objectRegistry.get(prop.kind),w=d?.wall,s=d?.slab;

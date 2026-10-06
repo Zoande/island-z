@@ -1,0 +1,23 @@
+[Unit]
+Description=Island Z authoritative world
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=island-z
+Group=island-z
+WorkingDirectory=/opt/island-z
+EnvironmentFile=/etc/island-z.env
+ExecStart=/usr/bin/node /opt/island-z/dist-server/index.js
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=120
+StateDirectory=island-z
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

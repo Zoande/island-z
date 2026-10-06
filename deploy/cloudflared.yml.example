@@ -1,0 +1,7 @@
+# For a locally managed named Tunnel. Set the real UUID and credentials path.
+tunnel: YOUR-TUNNEL-UUID
+credentials-file: /etc/cloudflared/YOUR-TUNNEL-UUID.json
+ingress:
+  - hostname: api.example.com
+    service: http://127.0.0.1:3001
+  - service: http_status:404

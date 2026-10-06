@@ -1,0 +1,5 @@
+import {parentPort,workerData} from 'node:worker_threads';
+import {WorldRuntime} from './world-runtime';
+const world=new WorldRuntime(workerData.config,workerData.directory,(connection,message)=>parentPort!.postMessage({event:true,connection,message}));
+const ready=world.initialize();
+parentPort!.on('message',async m=>{try{await ready;let value;switch(m.type){case 'join':value=await world.join(m.connection,m.value);break;case 'inputs':world.inputs(m.connection,m.value);break;case 'subscribe':value=world.subscribe(m.connection,m.value.cells,m.value.generation);break;case 'baseline':value=await world.baseline(m.connection,m.value.cells,m.value.generation);break;case 'command':world.command(m.connection,m.value);break;case 'leave':await world.leave(m.connection);break;case 'performance':value=world.performance();break;case 'close':await world.close();break;default:throw new Error('Unknown world operation');}parentPort!.postMessage({id:m.id,value});}catch(error){parentPort!.postMessage({id:m.id,error:error instanceof Error?error.message:String(error)});}});

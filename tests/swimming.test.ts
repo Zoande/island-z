@@ -48,24 +48,24 @@ describe('movement and swimming',()=>{
   });
   it('resets to the original game spawn after exactly one minute submerged, including missing terrain',()=>{
     let loaded=true;const c=new Character({...ocean,surface:()=>loaded?{height:-100,normal:[0,1,0]}:null});
-    c.spawn(20,3,30);c.spawn(0,-10,0);loaded=false;c.update(59,idleInput);expect(c.oxygen).toBe(1);expect(c.respawns).toBe(0);
-    c.update(1,idleInput);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([20,3,30]);expect(c.oxygen).toBe(60);expect(c.stamina).toBe(100);
+    c.spawn(20,3,30);c.spawn(0,-10,0);loaded=false;advanceVitals(c,59);expect(c.oxygen).toBeCloseTo(1,8);expect(c.respawns).toBe(0);
+    advanceVitals(c,1);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([20,3,30]);expect(c.oxygen).toBe(60);expect(c.stamina).toBe(100);
   });
   it('keeps freshwater and near-shore oxygen gentle, then increases offshore drowning risk without a boundary',()=>{
     for(const [kind,distance,seconds]of [['lake',2000,60],['river',2000,60],['ocean',0,60],['ocean',50,60],['ocean',400,30],['ocean',750,12],['ocean',1450,60/17]]as const) {
       const c=new Character({...ocean,surface:()=>null,water:()=>({level:0,kind,offshoreMeters:distance})});c.spawn(0,3,0);c.spawn(0,-10,0);
-      c.update(seconds-.01,idleInput);expect(c.respawns).toBe(0);expect(c.oxygen).toBeGreaterThan(0);
-      c.update(.02,idleInput);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([0,3,0]);expect(c.oxygenDrainRate).toBe(1);
+      advanceVitals(c,seconds-.01);expect(c.respawns).toBe(0);expect(c.oxygen).toBeGreaterThan(0);
+      advanceVitals(c,.02);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([0,3,0]);expect(c.oxygenDrainRate).toBe(1);
     }
   });
   it('updates drain when returning to shore or freshwater and keeps surface breathing and frame rates consistent',()=>{
     let water:CharacterWater={level:0,kind:'ocean',offshoreMeters:750};
     const environment={...ocean,water:()=>water};
     for(const fps of [15,60,144]){const c=swimmer(environment);c.oxygen=60;advance(c,2,idleInput,fps);expect(c.oxygen).toBeCloseTo(50,8);}
-    const c=swimmer({...environment,surface:()=>null});c.oxygen=40;c.update(1,idleInput);expect(c.oxygen).toBe(35);
-    water={...water,offshoreMeters:25};c.update(1,idleInput);expect(c.oxygen).toBe(34);
-    water={...water,kind:'lake',offshoreMeters:2000};c.update(1,idleInput);expect(c.oxygen).toBe(33);
-    water={...water,kind:'ocean',offshoreMeters:2000};c.feet[1]=0;c.update(1,idleInput);expect(c.oxygen).toBe(43);expect(c.respawns).toBe(0);
+    const c=swimmer({...environment,surface:()=>null});c.oxygen=40;advanceVitals(c,1);expect(c.oxygen).toBeCloseTo(35,8);
+    water={...water,offshoreMeters:25};advanceVitals(c,1);expect(c.oxygen).toBeCloseTo(34,8);
+    water={...water,kind:'lake',offshoreMeters:2000};advanceVitals(c,1);expect(c.oxygen).toBeCloseTo(33,8);
+    water={...water,kind:'ocean',offshoreMeters:2000};c.feet[1]=0;advanceVitals(c,1);expect(c.oxygen).toBeCloseTo(43,8);expect(c.respawns).toBe(0);
   });
   it('drains during acceleration, sprinting and swimming, and only recovers with gentle walking or water idling',()=>{
     const c=new Character(flat);c.spawn(0,0,0);c.stamina=50;
@@ -103,3 +103,5 @@ describe('underwater world',()=>{
     expect(world.props(x-128,z-128,256,false).some(p=>p.kind==='algae')).toBe(false);
   });
 });
+
+function advanceVitals(c:Character,seconds:number){let elapsed=0;for(;elapsed+1/120<=seconds+1e-8;elapsed+=1/120)c.update(1/120,idleInput);if(seconds-elapsed>1e-8)c.update(seconds-elapsed,idleInput);}

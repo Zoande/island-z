@@ -1,47 +1,37 @@
-import { createServer } from 'node:http';
-import { GENERATOR_VERSION, parseWorldConfig } from '../shared/config';
-import {BuildStore} from './build-store';
-import {DestructionStore} from './destruction-store';
-import {FallingSimulation} from './falling';
+import {createServer} from 'node:http';
+import {randomUUID} from 'node:crypto';
 import {WebSocketServer,WebSocket} from 'ws';
-import {buildCell} from '../shared/object-registry';
-import {predictionReply,validAction,type WorldAction} from '../shared/destruction';
-export function createWorldServer(configuration: unknown,options:{saveDirectory?:string}={}) {
-  const world = Object.freeze({ ...parseWorldConfig(configuration), generatorVersion: GENERATOR_VERSION });
-  let builds:BuildStore|undefined;
-  const store=()=>builds??=new BuildStore(world,options.saveDirectory);
-  let edits:DestructionStore|undefined,falling:FallingSimulation|undefined;
-  const peers=new Map<WebSocket,Set<string>>();
-  const sessions=new Map<WebSocket,string>(),requests=new Map<string,WorldAction>();
-  const broadcast=(message:any)=>{for(const [peer,cells]of peers){if(peer.readyState!==WebSocket.OPEN)continue;const records=message.patch?.solids??message.states??[];if(!records.length||records.some((r:any)=>{const p=r.pose?.position??(r.prop&&[r.prop.x,r.prop.y,r.prop.z]);return !p||cells.has(buildCell(p[0],p[2]))||r.prop&&cells.has(buildCell(r.prop.x,r.prop.z));})){const request=requests.get(message.patch?.actionId);const reply=request&&request.sessionId===sessions.get(peer)?predictionReply({ok:true,requestId:request.requestId,patch:message.patch},request.prediction):undefined;peer.send(JSON.stringify(reply?.ok&&'ack'in reply?{type:'ack',worldKey:store().worldKey,result:reply}:message));}}};
-  const destruction=()=>{if(!edits){edits=new DestructionStore(store(),options.saveDirectory);falling=new FallingSimulation(edits);edits.listeners.add(patch=>broadcast({type:'patch',worldKey:store().worldKey,patch}));falling.listeners.add(states=>broadcast({type:'motion',states}));}return edits;};
-  const server=createServer((req, res) => {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    const url=new URL(req.url ?? '/', 'http://localhost'),path=url.pathname;
-    if(path==='/api/actions'&&req.method==='POST'){let body='',size=0,rejected=false;req.on('data',(chunk:Buffer)=>{size+=chunk.length;if(size>8192){if(!rejected){rejected=true;res.writeHead(413);res.end(JSON.stringify({ok:false,code:'request',error:'Action request too large'}));}return;}body+=chunk.toString('utf8');});req.on('end',()=>{if(rejected)return;let input:unknown;try{input=JSON.parse(body);}catch{res.writeHead(400);res.end(JSON.stringify({ok:false,code:'request',error:'Invalid JSON'}));return;}const action=validAction(input)?input:undefined;if(action)requests.set(action.requestId,action);void Promise.resolve().then(()=>destruction().action(input)).then(result=>{res.writeHead(result.ok?200:409);res.end(JSON.stringify(predictionReply(result,action?.prediction)));}).catch(error=>{console.error(error);res.writeHead(500);res.end(JSON.stringify({ok:false,code:'internal',error:'Destruction service failed'}));}).finally(()=>{if(action&&requests.get(action.requestId)===action)requests.delete(action.requestId);});});return;}
-    if(path==='/api/builds'&&req.method==='POST') {
-      let size=0,body='';let rejected=false;
-      req.on('data',(chunk:Buffer)=>{size+=chunk.length;if(size>8192){if(!rejected){rejected=true;res.writeHead(413);res.end(JSON.stringify({ok:false,code:'request',error:'Placement request is too large'}));}return;}body+=chunk.toString('utf8');});
-      req.on('end',async()=>{if(rejected)return;try{const damage=destruction();const result=await damage.place(JSON.parse(body));res.writeHead(result.ok?201:409);res.end(JSON.stringify(result));}catch(error){res.writeHead(400);res.end(JSON.stringify({ok:false,code:'request',error:error instanceof SyntaxError?'Invalid JSON':'The building service could not load its world'}));}});
-      return;
-    }
-    if (req.method !== 'GET') { res.writeHead(405, { Allow: path==='/api/builds'?'GET, POST':'GET' }); res.end(JSON.stringify({ error: 'Method not allowed.' })); return; }
-    if (path === '/api/world') { res.end(JSON.stringify(world)); return; }
-    if (path === '/api/health') { res.end(JSON.stringify({ status: 'ok', generatorVersion: GENERATOR_VERSION })); return; }
-    if(path==='/api/performance'){res.end(JSON.stringify({edits:edits?.performanceReport()??null,physicsRegions:falling?.regions.size??0}));return;}
-    if(path==='/api/builds') {
-      const cells=(url.searchParams.get('cells')??'').split(',').filter(Boolean),since=url.searchParams.get('since');
-      if(cells.length>64||cells.some(c=>!/^[-]?\d{1,7}:[-]?\d{1,7}$/.test(c))||since!==null&&!/^\d{1,12}$/.test(since)){res.writeHead(400);res.end(JSON.stringify({error:'Invalid build region query'}));return;}
-      try{const damage=destruction(),snapshot=store().snapshot([...new Set(cells)],since===null?undefined:Number(since));res.end(JSON.stringify({...snapshot,edits:snapshot.unchanged?undefined:damage.snapshot(cells)}));}catch(error){console.error(error);res.writeHead(500);res.end(JSON.stringify({error:'The building service could not load its world'}));}return;
-    }
-    res.writeHead(404); res.end(JSON.stringify({ error: 'Not found.' }));
-  });
-  const sockets=new WebSocketServer({noServer:true,maxPayload:32768});
-  server.on('upgrade',(req,socket,head)=>{if(new URL(req.url??'/', 'http://localhost').pathname!=='/api/events'){socket.destroy();return;}sockets.handleUpgrade(req,socket,head,peer=>sockets.emit('connection',peer));});
-  sockets.on('connection',peer=>{peers.set(peer,new Set());peer.on('message',data=>{try{const m=JSON.parse(data.toString());if(m.type==='pose'){if(typeof m.sessionId==='string'&&m.sessionId.length<=100)sessions.set(peer,m.sessionId);destruction().updateActor(m.sessionId,m.feet);return;}if(m.type==='subscribe'&&Array.isArray(m.cells)&&m.cells.length<=512&&m.cells.every((c:any)=>typeof c==='string'&&/^-?\d+:-?\d+$/.test(c))){peers.set(peer,new Set(m.cells));const damage=destruction();peer.send(JSON.stringify({type:'snapshot',worldKey:store().worldKey,patch:damage.snapshot(m.cells)}));}}catch{peer.close(1008,'Invalid subscription');}});peer.on('close',()=>{peers.delete(peer);sessions.delete(peer);});});
-  const close=server.close.bind(server);server.close=((callback?:Parameters<typeof server.close>[0])=>{for(const peer of peers.keys())peer.terminate();return close(callback);})as typeof server.close;
-  server.on('close',()=>{sockets.close();falling?.dispose();edits?.dispose();});
-  return server;
+import {GENERATOR_VERSION,parseWorldConfig} from '../shared/config';
+import {encodeMessage,decodeMessage,validCell,PROTOCOL_VERSION} from '../shared/network';
+import {WorldService} from './world-service';
+export function createWorldServer(configuration:unknown,options:{saveDirectory?:string;origins?:string[]}={}){
+ const world=Object.freeze({...parseWorldConfig(configuration),generatorVersion:GENERATOR_VERSION});
+ const peers=new Map<string,WebSocket>(),connections=new Map<WebSocket,string>(),alive=new Set<WebSocket>();let service:WorldService|undefined;
+ const send=(id:string,m:any)=>{const peer=peers.get(id);if(!peer||peer.readyState!==WebSocket.OPEN)return;if(peer.bufferedAmount>256*1024){if(m.type==='players'||m.type==='motion')return;if(peer.bufferedAmount>8*1024*1024){peer.close(1013,'Slow connection; reconnect to resync');return;}}peer.send(encodeMessage(m));};
+ const authority=()=>service??=new WorldService(world,options.saveDirectory,send);
+ const allowed=(origin:string|undefined,host:string|undefined)=>{if(!origin)return !options.origins?.length;try{const u=new URL(origin);return options.origins?.length?options.origins.includes(u.origin):u.host===host;}catch{return false;}};
+ const server=createServer((req,res)=>{const origin=req.headers.origin;if(!allowed(origin,req.headers.host)){res.writeHead(403);res.end('Origin not allowed');return;}if(origin){res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');}res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','application/json; charset=utf-8');
+   const url=new URL(req.url??'/','http://localhost'),path=url.pathname;if(req.method==='OPTIONS'){res.writeHead(204,{'Access-Control-Allow-Methods':'GET, OPTIONS'});res.end();return;}if(req.method!=='GET'){res.writeHead(405,{Allow:'GET'});res.end(JSON.stringify({error:'World commands require a joined WebSocket session'}));return;}
+   if(path==='/api/world'){res.end(JSON.stringify(world));return;}if(path==='/api/health'){void authority().request('performance').then(()=>res.end(JSON.stringify({status:'ok',generatorVersion:GENERATOR_VERSION}))).catch(()=>{res.writeHead(503);res.end(JSON.stringify({status:'unavailable'}));});return;}
+   if(path==='/api/performance'){void authority().request('performance').then(v=>res.end(JSON.stringify(v))).catch(()=>{res.writeHead(503);res.end('{}');});return;}
+   if(path==='/api/builds'){const session=url.searchParams.get('session')??'',generation=Number(url.searchParams.get('generation')),cells=(url.searchParams.get('cells')??'').split(',').filter(Boolean);if(peers.get(session)?.readyState!==WebSocket.OPEN||!Number.isSafeInteger(generation)||generation<1||cells.length>16||cells.some(c=>!validCell(c))){res.writeHead(400);res.end(JSON.stringify({error:'Invalid or expired region request'}));return;}
+     void authority().request('baseline',session,{cells,generation}).then(v=>{const bytes=encodeMessage(v);if(bytes.length>32*1024*1024)throw new Error('Region too large');res.setHeader('Content-Type','application/octet-stream');res.end(bytes);}).catch(()=>{res.writeHead(409);res.end(JSON.stringify({error:'Region load obsolete; retry'}));});return;}
+   res.writeHead(404);res.end(JSON.stringify({error:'Not found'}));
+ });
+ const sockets=new WebSocketServer({noServer:true,maxPayload:32768});
+ server.on('upgrade',(req,socket,head)=>{if(!allowed(req.headers.origin,req.headers.host)||new URL(req.url??'/','http://localhost').pathname!=='/api/events'){socket.destroy();return;}sockets.handleUpgrade(req,socket,head,peer=>sockets.emit('connection',peer));});
+ sockets.on('connection',peer=>{const id=randomUUID();peers.set(id,peer);connections.set(peer,id);alive.add(peer);send(id,{type:'hello',connection:id,version:PROTOCOL_VERSION});let joined=false,busy=false,windowStart=Date.now(),messages=0,bytes=0;let ordered=Promise.resolve();
+   peer.on('pong',()=>alive.add(peer));peer.on('message',(data,binary)=>{if(Date.now()-windowStart>1000){windowStart=Date.now();messages=0;bytes=0;}if(++messages>120||(bytes+=(data instanceof ArrayBuffer?data.byteLength:Array.isArray(data)?data.reduce((n,b)=>n+b.length,0):data.length))>128*1024||!binary){peer.close(1008,'Message limit or format');return;}
+     let m:any;try{m=decodeMessage(new Uint8Array(data as Buffer),32768);if(!m||typeof m!=='object'||Array.isArray(m)||typeof m.type!=='string')throw new Error('Invalid envelope');}catch{peer.close(1008,'Invalid binary message');return;}
+     if(m.type==='ping'){send(id,{type:'pong',sent:m.sent});return;}
+     if(!joined&&!busy&&m.type!=='join'){peer.close(1008,'Join first');return;}
+     if(m.type==='join'){if(joined||busy){peer.close(1008,'Already joining');return;}busy=true;ordered=ordered.then(async()=>{await authority().request('join',id,m);joined=true;});}
+     else ordered=ordered.then(async()=>{if(m.type==='inputs')await authority().request('inputs',id,m.steps);else if(m.type==='subscribe'){const v=await authority().request('subscribe',id,m);send(id,{type:'subscribed',...v});}else if(m.type==='command')await authority().request('command',id,m);else throw new Error('Unknown message');});
+     ordered=ordered.catch(e=>{send(id,{type:'error',error:e.message});peer.close(1008,'Invalid session message');});
+   });
+   peer.on('close',()=>{peers.delete(id);connections.delete(peer);alive.delete(peer);if(!closing)void ordered.then(()=>service?.request('leave',id)).catch(e=>console.error('Disconnect save:',e));});
+ });
+ const heartbeat=setInterval(()=>{for(const peer of peers.values()){if(!alive.delete(peer)){peer.terminate();continue;}peer.ping();}},15000);heartbeat.unref();
+ const close=server.close.bind(server);let closing=false;server.close=((callback?:Parameters<typeof server.close>[0])=>{if(closing)return server;closing=true;clearInterval(heartbeat);for(const peer of peers.values())peer.terminate();void(service?.close()??Promise.resolve()).then(()=>{sockets.close();close(callback);}).catch(error=>{console.error('World shutdown:',error);close(()=>callback?.(error));});return server;})as typeof server.close;
+ return server;
 }
-

@@ -1,11 +1,16 @@
-import {writeFileSync} from 'node:fs';
+import {mkdirSync,writeFileSync} from 'node:fs';
 import {SolidPhysics,initializePhysics} from '../shared/solid-physics';
-import {initializeMeshRefinement,refineVolumeMeshes,collisionSurfaceMeshes} from '../shared/mesh-refinement';
-import {meshVolume} from '../shared/volume';
+import {recordFor} from '../shared/destruction';
+import {SparseVolume} from '../shared/volume';
+import {collisionBoxes} from '../shared/volume-collision';
 import type {Point3} from '../shared/rocks';
 import {CHARACTER} from '../shared/character';
-const snapshot=await(await fetch('http://127.0.0.1:3001/api/builds?cells=4:21')).json();await initializePhysics();await initializeMeshRefinement();const physics=new SolidPhysics([2048,0,10752]),records=snapshot.edits.solids.filter((r:any)=>!r.removed&&r.prop.kind.startsWith('wall'));
-for(const r of records){const meshes=collisionSurfaceMeshes(refineVolumeMeshes(meshVolume(r.source,r.volume)));physics.add(r,[],meshes,false);console.log(r.id,r.prop.x,r.prop.z,meshes.reduce((n,m)=>n+m.indices.length/3,0));}
-const feet:Point3=[2456.4074539796984,5.782323024968906-CHARACTER.eyeHeight,10993.541009669367];physics.movement(feet,[0,0,-.08],.32,2.16,.28,.3);const controller=(physics as any).controller,results=[];
-for(const nudge of [.0001,.0005,.001,.002,.005]){controller.setNormalNudgeFactor(nudge);for(const auto of [true,false]){const canStep=(physics as any).canStep.bind(physics);if(!auto)(physics as any).canStep=()=>false;const start=performance.now();let result:any;for(let i=0;i<100;i++)result=physics.movement(feet,[0,0,-.08],.32,2.16,.28,.3);results.push({nudge,auto,ms:(performance.now()-start)/100,result,collisions:controller.numComputedCollisions()});if(!auto)(physics as any).canStep=canStep;}}
-physics.dispose();console.log(results);writeFileSync('artifacts/collision-contact-benchmark.json',JSON.stringify(results,null,2));
+// Offline canonical fixture; no old test save or unauthenticated HTTP endpoint.
+await initializePhysics();const physics=new SolidPhysics(),record=recordFor('benchmark-wall',{kind:'wall-wood',x:0,y:0,z:0,variant:0,rotation:0,scale:1},[]),volume=new SparseVolume(record.source);
+volume.edit({center:[0,1.2,.1],axis:[0,0,-1],radius:.12,depth:.1,seed:1});record.volume=volume.state;
+physics.add(record,collisionBoxes(record.source,record.volume,.05),undefined,false);
+const feet:Point3=[0,0,.43],results:any[]=[];
+try{physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,.28,.3);const controller=(physics as any).controller;
+ for(const nudge of [.0001,.0005,.001,.002,.005]){controller.setNormalNudgeFactor(nudge);const start=performance.now();let result:any;for(let i=0;i<100;i++)result=physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,.28,.3);results.push({nudge,ms:(performance.now()-start)/100,result,collisions:controller.numComputedCollisions()});}
+}finally{physics.dispose();}
+mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/collision-contact-benchmark.json',JSON.stringify(results,null,2));console.log(results);

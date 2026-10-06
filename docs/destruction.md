@@ -52,50 +52,37 @@ pieces after a hard impact. Tree pieces remain cuttable and colliding. Other
 unsupported objects fall and disappear two seconds after settling, or after
 15 seconds. No weight/strength simulation or tiny debris is implemented.
 
-Rapier supplies local-origin falling regions and capsule queries against edited
-solids. Static edited surfaces use welded, topology-preserving collision meshes reduced with a 2.5 mm object-space error bound; moving pieces use compound
-convex boxes that retain their openings. Existing terrain movement and swimming
-settings are retained. An index of climbable faces avoids costly automatic stepping attempts against tall trunks; the step height and slope limits are unchanged. Sleeping pieces and inactive regions stop simulation.
+Existing Rapier local-origin regions simulate falling pieces and query edited
+solids. Client and server use identical cooked boxes for edited collision,
+independent of detailed render meshes. Terrain movement/swimming retain their
+settings. No new physics features or character-controller replacement is added.
 
 ## Authority and saving
 
-`POST /api/actions` validates world identity, reach, occlusion, aim, revision,
-cadence, repair eligibility, and occupancy. Action IDs are deduplicated. Clients
-predict edits, reconcile acknowledgements, roll back failures, and rebase pending
-actions. `/api/events` streams region snapshots, changes, and authoritative motion.
-Player movement remains client-controlled in this pass.
+Joined WSS commands carry input sequence and stable request ID. Server movement
+supplies eye/feet/standing; the authority derives brushes and checks reach,
+visibility, revision, cadence, repair eligibility and occupancy. HTTP POST world
+commands are removed. Reliable edit events and compact receipts are independent
+of bulk region baselines.
 
-Local input raycasts against the current predicted solid and edits its sparse
-samples synchronously. A native-spacing dual-contour patch replaces only the
-surface around the brush, including actual interior faces. A dedicated skin
-clipping pipeline also clips its depth and shadow passes; unchanged scenery
-uses its existing pipelines. GPU upload and visible installation happen before
-sending the action. Full-object meshes, distance levels, and collision cooking
-remain worker jobs and cannot delay this visible response. Their results are
-checked against both revision and actual volume before installation.
+Skin clipping appears immediately; sparse edit/contour prediction runs in a
+worker. Full-object geometry and distant LODs follow separately. The server cooks
+collision before durable activation, while connectivity continues asynchronously
+after a cut is saved. Native 2.5 cm sampling preserves thin severing gaps. Spatial
+contact propagation yields between batches and validates all read dependencies
+before committing collapse.
 
-The client submits an intent and a canonical digest of its predicted result.
-The server independently validates and derives the edit against its own world;
-it never trusts client mesh data or the digest as permission. Matching edits
-receive small acknowledgements over HTTP and the originating WebSocket. Only
-differences or edits with additional effects require a correction patch to that
-client. Other clients receive the authoritative geometry state. Rejection
-restores the affected local surface and rebases remaining predictions.
+The unified binary journal records a cut and its support-pending marker together.
+Build/aperture changes are atomic. Compact receipts, unfinished support, grading,
+openings, and fragment poses survive restart. Edited volumes hydrate by cell and
+inactive records/caches have limits. Fragment poses use small motion records;
+a delayed save cannot overwrite a newer live pose.
 
-Support graphs, disconnected sections, collapse, and falling physics run only
-on the server's non-rendered world copy. Clients interpolate the resulting
-fragment states; they do not calculate support or decide what falls.
-
-A cut is journaled and acknowledged before expensive support/collider work.
-Queued support analysis coalesces strokes and verifies every geometry revision
-it read before committing collapse. Concurrent changes invalidate old analysis.
-Unfinished support work is saved so restart resumes it safely.
-
-Build checkpoints preserve prior saves and IDs, independent openings, permanent
-leveling, damage, removals, and fragment poses. Immutable region files plus an
-atomic checkpoint head bound replay. Decoded server records and worker contour
-caches have resident budgets. One contour template larger than the worker budget is retained by itself rather than repeatedly regenerated; the reported worker cache size can exceed the nominal 96 MB budget for the largest oak. World seed and terrain-generator version remain
-unchanged. Save failure rejects the action before publishing it.
+Client mesh results validate revision and volume identity. Partial region
+snapshots compare per-object versions instead of rejecting an entire older
+global revision. Client collision activation is independent of rendering jobs.
+There is no legacy save migration. Full sparse object state is still sent on a
+geometry change; dirty-brick network deltas remain a measured follow-up.
 
 ## Diagnostics and checks
 
@@ -115,15 +102,10 @@ npm run benchmark:destruction
 npm run profile -- voxel-depth depth-compare
 ```
 
-Browser destruction checks use an isolated save directory and HTTP/WebSocket
-server, exercise real input, holes, repair, rejection rollback, and falling tree
-pieces, and write reports/screenshots to `artifacts`. They do not edit your save.
-The prediction check delays server responses by 1.8 seconds and blocks the
-background geometry worker, then checks a first wall cut, rejection rollback,
-a cold tree cut, compact acknowledgements, and eventual worker finalization.
-`artifacts/prediction-validation.json` separates mesh/upload time from total
-input-to-visible-commit time. On this PC the latest run measured 51 ms for the
-wall patch and 45 ms for the cold oak patch (87/96 ms including targeting and
-the sparse edit), with no WebGPU validation errors. These are local CPU commit
-times; the next rendered frame adds the current frame interval. Collision
-cooking and authoritative support remain asynchronous and are measured separately.
+The current `check:destruction` and `check:prediction` entry points delegate to
+the single-client multiplayer smoke harness. It covers join, movement, building,
+cutting, and reload using isolated saves; it does not claim the older delayed
+response/tree/repair browser scenarios. Unit suites cover repair, connectivity,
+stale motion, transaction failure and recovery. See
+[the implementation record](multiplayer-implementation-plan.md) for evidence and
+limits. No live two-player/ten-player validation is performed.

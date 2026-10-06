@@ -4,7 +4,7 @@ import type {Point3} from './rocks';
 export const VOLUME_VERSION=1, VOXEL_SIZE=.025, BRICK_SIZE=8, DISTANCE_UNIT=.0001;
 export type SolidPrimitive={type:'box';center:Point3;half:Point3;material:string}|{type:'capsule'|'cylinder';a:Point3;b:Point3;r0:number;r1:number;material:string;branch?:number}|{type:'planes';planes:number[][];bounds:[Point3,Point3];material:string}|{type:'heightfield';heights:number[];grid:number;spacing:number;bounds:[Point3,Point3];material:string};
 export interface SolidSource {version:1;primitives:SolidPrimitive[];bounds:[Point3,Point3]}
-export interface VolumeState {version:1;bricks:Record<string,number[]>;clips?:{normal:Point3;offset:number}[];mask?:Record<string,number[]>}
+export interface VolumeState {version:1;bricks:Record<string,Int16Array>;clips?:{normal:Point3;offset:number}[];mask?:Record<string,number[]>}
 export interface EditBrush {center:Point3;axis:Point3;radius:number;depth:number;seed:number;box?:Point3}
 export interface VolumeMesh {vertices:Float32Array;indices:Uint32Array;material:string;prepared?:VolumeMesh[]}
 export const emptyVolume=():VolumeState=>({version:1,bricks:{}});
@@ -48,7 +48,7 @@ export function brushDistance(p:Point3,b:EditBrush):number {
  * has not been edited. Bricks have unique ownership, including negative axes. */
 export class SparseVolume {
   readonly state:VolumeState;
-  constructor(readonly source:SolidSource,state:VolumeState=emptyVolume(),readonly local=false){this.state={version:1,bricks:{...state.bricks},mask:state.mask&&{...state.mask},clips:state.clips?.map(p=>({normal:[...p.normal],offset:p.offset}))};}
+  constructor(readonly source:SolidSource,state:VolumeState=emptyVolume(),readonly local=false){this.state={version:1,bricks:Object.fromEntries(Object.entries(state.bricks).map(([key,values])=>[key,values instanceof Int16Array?values:Int16Array.from(Object.values(values))])),mask:state.mask&&{...state.mask},clips:state.clips?.map(p=>({normal:[...p.normal],offset:p.offset}))};}
   base(p:Point3){let d=this.local?localSourceDistance(this.source,p):sourceDistance(this.source,p);for(const c of this.state.clips??[])d=Math.max(d,dot(p,c.normal)-c.offset);return d;}
   sample(x:number,y:number,z:number){const c=coordinates(x,y,z),brick=this.state.bricks[c.key];let value=brick?brick[c.index]*DISTANCE_UNIT:quantize(this.base([x*VOXEL_SIZE,y*VOXEL_SIZE,z*VOXEL_SIZE]))*DISTANCE_UNIT;for(const plane of this.state.clips??[])value=Math.max(value,quantize(dot([x*VOXEL_SIZE,y*VOXEL_SIZE,z*VOXEL_SIZE],plane.normal)-plane.offset)*DISTANCE_UNIT);if(value<0&&this.state.mask&&!(this.state.mask[c.key]?.[c.index>>>5]&(1<<(c.index&31))))return VOXEL_SIZE*.5;return value;}
   distance(p:Point3):number {
@@ -56,7 +56,7 @@ export class SparseVolume {
     for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<2;x++)value+=this.sample(i[0]+x,i[1]+y,i[2]+z)*(x?f[0]:1-f[0])*(y?f[1]:1-f[1])*(z?f[2]:1-f[2]);return value;
   }
   normal(p:Point3):Point3 {const h=VOXEL_SIZE*.5,v=[0,1,2].map(i=>{const a=[...p]as Point3,b=[...p]as Point3;a[i]+=h;b[i]-=h;return this.distance(a)-this.distance(b);}),length=Math.hypot(...v)||1;return v.map(n=>n/length)as Point3;}
-  private brick(key:string):number[]{const old=this.state.bricks[key];if(old)return old;const [x,y,z]=key.split(':').map(Number),values=new Array<number>(512);for(let k=0;k<8;k++)for(let j=0;j<8;j++)for(let i=0;i<8;i++)values[k*64+j*8+i]=quantize(this.base([(x*8+i)*VOXEL_SIZE,(y*8+j)*VOXEL_SIZE,(z*8+k)*VOXEL_SIZE]));this.state.bricks[key]=values;return values;}
+  private brick(key:string):Int16Array{const old=this.state.bricks[key];if(old)return old;const [x,y,z]=key.split(':').map(Number),values=new Int16Array(512);for(let k=0;k<8;k++)for(let j=0;j<8;j++)for(let i=0;i<8;i++)values[k*64+j*8+i]=quantize(this.base([(x*8+i)*VOXEL_SIZE,(y*8+j)*VOXEL_SIZE,(z*8+k)*VOXEL_SIZE]));this.state.bricks[key]=values;return values;}
   edit(brush:EditBrush,repair=false,allowed?:(p:Point3)=>boolean):boolean {
     const extent=brush.box??brush.axis.map(v=>Math.abs(v)*brush.depth+brush.radius+VOXEL_SIZE)as Point3;
     const lo=brush.center.map((v,i)=>Math.floor((v-extent[i]-VOXEL_SIZE)/VOXEL_SIZE)),hi=brush.center.map((v,i)=>Math.ceil((v+extent[i]+VOXEL_SIZE)/VOXEL_SIZE));

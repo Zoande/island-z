@@ -1,3 +1,4 @@
+import type {MultiplayerClient} from './multiplayer';
 import type {PlayerCamera} from './camera';
 import type {IslandRenderer} from './renderer';
 import type {WorldGenerator} from '../shared/world';
@@ -15,15 +16,11 @@ export interface BuildTransport {
   place(request:BuildRequest,signal:AbortSignal):Promise<BuildResult>;
   door?(request:DoorRequest,signal:AbortSignal):Promise<BuildResult>;
 }
-export const httpBuildTransport:BuildTransport={
-  async snapshot(cells,since,signal){const query=new URLSearchParams({cells:cells.join(',')});if(since!==undefined)query.set('since',String(since));const response=await fetch(`/api/builds?${query}`,{signal,cache:'no-store'});if(!response.ok)throw new Error('Cannot load saved builds');return response.json();},
-  async place(request,signal){const response=await fetch('/api/builds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request),signal});const result=await response.json();if(typeof result.ok!=='boolean')throw new Error('Invalid server confirmation');return result;},
-  async door(request,signal){const response=await fetch('/api/builds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request),signal});const result=await response.json();if(typeof result.ok!=='boolean')throw new Error('Invalid door confirmation');return result;},
-};
 const icons:Record<string,string>={rock:'<path d="M6 24 11 10 25 6 34 17 30 30 16 32Z"/><path d="m11 10 9 10 14-3M20 20l-4 12"/>',tree:'<path d="M17 32V20h6v12M20 4c-7 0-12 6-10 10-6 5-2 13 6 12h8c8 1 12-7 6-12C32 10 27 4 20 4Z"/>',wood:'<path d="M7 7h26v26H7ZM13 7v26M20 7v26M27 7v26M7 13h26M7 27h26"/>',stone:'<path d="M5 8h30v24H5ZM5 16h30M5 24h30M15 8v8M27 8v8M11 16v8M23 16v8M16 24v8M29 24v8"/>',torch:'<path d="M17 22h6l-1 13h-4ZM14 18h12l-3 5h-6ZM20 3c1 6 7 7 5 13-1 3-9 3-10 0-2-4 3-5 3-9 1 2 2 2 2-4Z"/>'};
 /** Owns optimistic overlays and bounded region snapshots, independently of rendering. */
 Object.assign(icons,{floor:'<path d="m4 22 16-9 16 9-16 9ZM4 22v5l16 9 16-9v-5M20 31v5M12 18l16 9M20 13l16 9"/>',roof:'<path d="m3 25 17-17 17 17M7 22v11h26V22M12 16l17 17M20 8l13 14"/>',fire:'<path d="m7 30 26 5M7 35l26-5M20 4c0 7 10 10 7 18-3 7-16 7-16-1 0-4 5-6 6-11 1 3 3 4 3-6Z"/>',bed:'<path d="M5 34V10h3v17h27v7M8 18h12v9M20 20h15v7M12 18v-5h7v5M5 30h30"/>',table:'<path d="M4 16h32v5H4ZM8 21v15M32 21v15M5 16l5-8h20l5 8M10 21h20"/>',chair:'<path d="M10 4h20v18H10ZM8 22h24v5H8ZM10 27v9M30 27v9M10 10h20M10 16h20"/>',door:'<path d="M7 36V4h26v32M12 9h17v27H12ZM24 22h2M12 14h17M12 30h17"/>',window:'<path d="M5 8h30v25H5ZM8 11h24v19H8ZM20 11v19M8 21h24M3 34h34"/>'});
 export class BuildingController {
+  network?:MultiplayerClient;private lastCellSignature='';
   readonly scene:BuildScene;readonly destruction:DestructionController;selected=8;variant=0;rotation=0;preview:Placement|null=null;
   readonly pending=new Map<string,BuildObject>();private confirmed=new Map<string,{object:BuildObject;revision:number}>();
   private cells=new Map<string,Cell>();private worldKey='';private connection='Connecting';private worldChanged=false;
@@ -32,7 +29,7 @@ export class BuildingController {
   private doorBusy=new Set<string>();private interaction:BuildObject|null=null;private interactionSignature='';
   get definitionId(){return catalogueChoices(this.selected)[this.choices.get(this.selected)??0]?.definitionId;}
   private notice='';private noticeUntil=0;private hudSignature='';private disposed=false;
-  constructor(readonly camera:PlayerCamera,world:WorldGenerator,readonly renderer:IslandRenderer,readonly transport:BuildTransport=httpBuildTransport) {
+  constructor(readonly camera:PlayerCamera,world:WorldGenerator,readonly renderer:IslandRenderer,readonly transport:BuildTransport) {
     this.scene=new BuildScene(world);renderer.buildScene=this.scene;this.destruction=new DestructionController(this,camera,renderer,message=>this.notify(message));
     const hotbar=document.getElementById('hotbar')!;
     hotbar.innerHTML=hotbarSlots.map((group,i)=>{const d=group?objectDefinition(group[0]):null;return `<button class="hotbar-slot" data-slot="${i}" aria-label="${i+1}: ${d?.label??'Empty slot'}" aria-pressed="${i===this.selected}"><span class="slot-number">${i+1}</span>${d?`<svg viewBox="0 0 40 40" aria-hidden="true">${icons[d.icon]??icons.wood}</svg><span class="slot-label">${d.label}</span><span class="slot-choices">1 / ${catalogueChoices(i).length}</span>`:'<span class="slot-label">Hands</span>'}</button>`;}).join('');
@@ -72,7 +69,7 @@ export class BuildingController {
       const parent=this.scene.placed.get(this.preview.object.support.id),prop=this.renderer.buildPreview.prop;if(parent){const c=Math.cos(parent.prop.rotation),s=Math.sin(parent.prop.rotation),side=(this.camera.position[0]-parent.prop.x)*s+(this.camera.position[2]-parent.prop.z)*c>=0?1:-1,depth=objectDefinition(parent.object!.definitionId).wall!.depth/2+.07;prop.x+=s*depth*side;prop.z+=c*depth*side;}
     }
     this.updateHud(now);
-    if(!this.polling&&!this.worldChanged&&now-this.lastPoll>2000)void this.sync();
+    const cells=this.wantedCells().join(',');if(this.network&&!this.network.connected)this.connection='Disconnected';if(!this.polling&&!this.worldChanged&&(cells!==this.lastCellSignature||this.connection!=='Connected'&&now-this.lastPoll>2000))void this.sync();
   }
   private updateHud(now:number) {
     const id=this.definitionId,notice=now<this.noticeUntil?this.notice:'',interaction=this.interaction?`F ${this.interaction.state?.open?'close':'open'} door`:'',reason=notice||this.preview?.reason||(!this.worldKey?'Connecting building service':'');
@@ -104,7 +101,7 @@ export class BuildingController {
         if(!result.ok){this.undo(object.id);this.notify(result.error);return;}
         if(!validBuildObject(result.object)||result.object.id!==object.id)throw new Error('Invalid placed object');
         this.pending.delete(object.id);this.confirmed.set(object.id,{object:result.object,revision:result.revision});this.scene.add(result.object);this.previewSignature='';
-      }catch{if(this.disposed)return;this.undo(object.id);this.notify('Placement could not be confirmed · undone');this.connection='Disconnected';}
+      }catch{if(this.disposed)return;this.undo(object.id);this.notify('Confirmation lost; refreshing world state');this.connection='Disconnected';}
       this.lastPoll=-Infinity;
     });
   }
@@ -129,6 +126,7 @@ export class BuildingController {
   async sync() {
     if(this.polling||this.disposed||this.worldChanged)return;this.polling=true;this.lastPoll=performance.now();
     const keys=this.wantedCells(),wanted=new Set(keys),signal=AbortSignal.any([this.abort.signal,AbortSignal.timeout(7000)]);
+    this.network?.setInterest(keys);
     try {
       const groups:string[][]=[];for(let i=0;i<keys.length;i+=64)groups.push(keys.slice(i,i+64));
       const snapshots=await Promise.all(groups.map(group=>{const known=group.every(key=>this.cells.has(key)),since=known?Math.min(...group.map(key=>this.cells.get(key)!.revision)):undefined;return this.transport.snapshot(group,since,signal);}));
@@ -146,9 +144,15 @@ export class BuildingController {
       for(const object of this.pending.values())objects.set(object.id,object);
       for(const solid of this.scene.placed.values())if(!objects.has(solid.id))this.scene.remove(solid.id);
       for(const object of objects.values())if(!this.scene.edits.get(object.id)?.removed&&(JSON.stringify(this.scene.placed.get(object.id)?.object)!==JSON.stringify(object)))this.scene.add(object);
-      this.connection='Connected';
+      this.connection='Connected';this.lastCellSignature=keys.join(',');
     }catch{if(!this.disposed)this.connection='Disconnected';}
     finally{this.polling=false;this.previewSignature='';}
+  }
+  acceptWorld(message:any){
+    for(const object of message.objects??[])if(validBuildObject(object)){const key=buildCell(object.position[0],object.position[2]),cell=this.cells.get(key);if(cell){cell.objects=cell.objects.filter(o=>o.id!==object.id);cell.objects.push(object);}this.confirmed.set(object.id,{object,revision:message.buildRevision??0});if(!this.pending.has(object.id))this.scene.add(object);}
+    const patch=message.patch??message.edits;
+    if(patch){for(const id of patch.removedBuilds??[]){this.confirmed.delete(id);for(const cell of this.cells.values())cell.objects=cell.objects.filter(o=>o.id!==id);}this.destruction.accept(patch);}
+    this.destruction.acceptCollisions(message.collisions??[]);this.previewSignature='';
   }
   dispose(){this.disposed=true;this.destruction.dispose();this.abort.abort();this.pending.clear();this.confirmed.clear();this.cells.clear();this.scene.placed.clear();this.renderer.buildPreview=null;this.renderer.buildScene=undefined;}
 }

@@ -4,6 +4,8 @@ export class PlayerCamera {
   readonly character:Character;
   readonly position=new Float64Array(3);
   yaw=0;pitch=0;
+  simulate=true;onInput?:(input:ReturnType<typeof characterInput>)=>void;
+  private publishInput(){this.onInput?.(document.pointerLockElement===this.canvas?characterInput(this.keys,this.yaw,this.pitch):idleInput);}
   readonly keys=new Set<string>();
   private abort=new AbortController();
   constructor(readonly canvas:HTMLCanvasElement,environment:CharacterEnvironment) {
@@ -11,15 +13,15 @@ export class PlayerCamera {
     const options={signal:this.abort.signal};
     window.addEventListener('keydown',e=>{
       if(document.pointerLockElement!==canvas)return;
-      this.keys.add(e.code);
+      this.keys.add(e.code);this.publishInput();
       if(['KeyW','KeyA','KeyS','KeyD','Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();
     },options);
-    window.addEventListener('keyup',e=>this.keys.delete(e.code),options);
-    window.addEventListener('blur',()=>this.keys.clear(),options);
-    document.addEventListener('pointerlockchange',()=>this.keys.clear(),options);
+    window.addEventListener('keyup',e=>{this.keys.delete(e.code);this.publishInput();},options);
+    window.addEventListener('blur',()=>{this.keys.clear();this.publishInput();},options);
+    document.addEventListener('pointerlockchange',()=>{this.keys.clear();this.publishInput();},options);
     document.addEventListener('mousemove',e=>{
       if(document.pointerLockElement!==canvas)return;
-      this.yaw+=e.movementX*.002;this.pitch=Math.max(-1.54,Math.min(1.54,this.pitch-e.movementY*.002));
+      this.yaw+=e.movementX*.002;this.pitch=Math.max(-1.54,Math.min(1.54,this.pitch-e.movementY*.002));this.publishInput();
     },options);
     canvas.addEventListener('click',()=>{if(document.pointerLockElement!==canvas)void canvas.requestPointerLock().catch(()=>{});},options);
   }
@@ -28,7 +30,7 @@ export class PlayerCamera {
   get forward():[number,number,number] {return [Math.sin(this.yaw)*Math.cos(this.pitch),Math.sin(this.pitch),-Math.cos(this.yaw)*Math.cos(this.pitch)];}
   update(dt:number) {
     const respawns=this.character.respawns;
-    this.character.update(dt,document.pointerLockElement===this.canvas?characterInput(this.keys,this.yaw,this.pitch):idleInput);
+    if(this.simulate)this.character.update(dt,document.pointerLockElement===this.canvas?characterInput(this.keys,this.yaw,this.pitch):idleInput);
     if(this.character.respawns!==respawns){this.keys.clear();this.yaw=0;this.pitch=-.04;}
     this.syncPosition();
   }

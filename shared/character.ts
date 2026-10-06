@@ -3,7 +3,7 @@ import {rockSurface,type RockCollisionShape} from './rock-collision';
 import {wallContains,wallPush,wallSweep} from './wall-collision';
 export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boolean;swimVector?:[number,number,number] }
 export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river';offshoreMeters?:number}
-export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall'|'fixture';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
+export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall'|'fixture'|'player';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
 export interface CharacterEnvironment {
   surface(x:number,z:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
@@ -15,6 +15,11 @@ export const CHARACTER = { radius:.32, height:2.16, eyeHeight:1.64*1.2, walkSpee
   oxygenSeconds:60,staminaCapacity:100,swimDrain:.18,oceanSwimDrain:.35,sprintDrain:.8,accelerationDrain:1.2,walkRecovery:.55,waterRecovery:.5,
   oceanOxygenGraceMeters:50,oceanOxygenRampMeters:350,
   gravity:22, jumpSpeed:4.8*Math.sqrt(1.3), jumpCost:4, stepHeight:.28, snapDistance:.3, slopeCos:Math.cos(48*Math.PI/180), timestep:1/120 };
+export interface CharacterState {
+ feet:[number,number,number];velocity:[number,number,number];grounded:boolean;inBush:boolean;ready:boolean;
+ swimming:boolean;underwater:boolean;sprinting:boolean;accelerating:boolean;exhausted:boolean;oxygen:number;oxygenDrainRate:number;stamina:number;waterLevel:number|null;respawns:number;
+ home?:[number,number,number];swimActive:boolean;waterKind:CharacterWater['kind'];accumulator:number;jumpHeld:boolean;jumpBuffer:number;coyote:number;
+}
 export const idleInput:CharacterInput={x:0,z:0,sprint:false,jump:false};
 /** Land movement stays horizontal; swimming follows look pitch. */
 export function characterInput(keys:ReadonlySet<string>,yaw:number,pitch=0):CharacterInput {
@@ -41,6 +46,13 @@ export class Character {
     this.oxygen=CHARACTER.oxygenSeconds;this.oxygenDrainRate=1;this.stamina=CHARACTER.staminaCapacity;this.waterLevel=null;
     this.accumulator=0;this.jumpHeld=false;this.jumpBuffer=0;this.coyote=0;
   }
+  capture():CharacterState {
+    if(Math.abs(this.accumulator)<1e-10)this.accumulator=0;
+    const {grounded,inBush,ready,swimming,underwater,sprinting,accelerating,exhausted,oxygen,oxygenDrainRate,stamina,waterLevel,respawns,swimActive,waterKind,accumulator,jumpHeld,jumpBuffer,coyote}=this;
+    return {feet:[...this.feet]as [number,number,number],velocity:[...this.velocity]as [number,number,number],home:this.home&&[...this.home],grounded,inBush,ready,swimming,underwater,sprinting,accelerating,exhausted,oxygen,oxygenDrainRate,stamina,waterLevel,respawns,swimActive,waterKind,accumulator,jumpHeld,jumpBuffer,coyote};
+  }
+  restore(state:CharacterState){this.feet.set(state.feet);this.velocity.set(state.velocity);const {feet,velocity,...rest}=state;Object.assign(this,rest);this.home=state.home&&[...state.home];}
+  contact(delta:[number,number,number]):[number,number,number]{const [x,y,z]=this.feet,colliders=this.environment.colliders(x,z).filter(c=>c.kind!=='player'),[nx,nz]=this.sweep(x,z,delta[0],delta[2],colliders),surface=this.support(nx,nz,colliders);if(!surface||surface.height>y+CHARACTER.stepHeight)return [x,y,z];return this.environment.solidMovement?.([x,y,z],[nx-x,0,nz-z],CHARACTER.radius,CHARACTER.height,0,0)?.feet??[nx,y,nz];}
   private support(x:number,z:number,colliders:readonly CharacterCollider[]=this.environment.colliders(x,z)):MeshSurface|null {
     const center=this.environment.surface(x,z);if(!center)return null;
     let height=center.height,normal=center.normal;
@@ -67,15 +79,15 @@ export class Character {
   update(dt:number,input:CharacterInput) {
     if(!Number.isFinite(dt)||dt<=0)return;
     const support=this.support(this.feet[0],this.feet[2]);
-    if(!support) {this.accumulator=0;this.jumpHeld=input.jump;this.updateSubmersion();this.updateVitals(dt,input);return;}
+    if(!support) {this.jumpHeld=input.jump;this.accumulator+=Math.min(.1,dt);while(this.accumulator+1e-10>=CHARACTER.timestep){this.accumulator-=CHARACTER.timestep;this.updateSubmersion();this.updateVitals(CHARACTER.timestep,input);}return;}
     if(!this.ready) {
       if(this.feet[1]<=support.height+CHARACTER.stepHeight){this.feet[1]=support.height;this.grounded=support.normal[1]>=CHARACTER.slopeCos;}
       this.ready=true;
     }
     if(input.jump&&!this.jumpHeld)this.jumpBuffer=.12;this.jumpHeld=input.jump;
     this.accumulator+=Math.max(0,Math.min(.1,dt));
-    while(this.accumulator+1e-10>=CHARACTER.timestep) {this.accumulator-=CHARACTER.timestep;this.step(CHARACTER.timestep,input);}
-    this.updateSubmersion();this.updateVitals(dt,input);
+    while(this.accumulator+1e-10>=CHARACTER.timestep) {this.accumulator-=CHARACTER.timestep;this.step(CHARACTER.timestep,input);this.updateSubmersion();this.updateVitals(CHARACTER.timestep,input);}
+
   }
   private updateSubmersion() {
     const water=this.environment.water?.(this.feet[0],this.feet[2]);this.waterLevel=water?.level??null;
@@ -88,7 +100,7 @@ export class Character {
   }
   private updateVitals(dt:number,input:CharacterInput) {
     this.oxygen=Math.max(0,Math.min(CHARACTER.oxygenSeconds,this.oxygen+(this.underwater?-dt*this.oxygenDrainRate:dt*10)));
-    if(this.oxygen<=0&&this.home){this.respawns++;this.spawn(...this.home);return;}
+    if(this.oxygen<=1e-8&&this.home){this.respawns++;this.spawn(...this.home);return;}
     const exerting=this.swimming?this.swimActive:input.sprint&&Math.hypot(input.x,input.z)>.01||this.accelerating;
     const drain=this.swimming?(this.waterKind==='ocean'?CHARACTER.oceanSwimDrain:CHARACTER.swimDrain):this.sprinting?CHARACTER.sprintDrain:CHARACTER.accelerationDrain;
     if(exerting)this.stamina=Math.max(0,this.stamina-drain*dt);
@@ -97,7 +109,7 @@ export class Character {
     else if(this.stamina>=15)this.exhausted=false;
   }
   private sweep(x:number,z:number,dx:number,dz:number,colliders:readonly CharacterCollider[]):[number,number] {
-    const trees=colliders.filter(c=>(c.kind==='tree'||c.kind==='fixture')&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
+    const trees=colliders.filter(c=>(c.kind==='tree'||c.kind==='fixture'||c.kind==='player')&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
     const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom&&!(this.grounded&&c.top<=this.feet[1]+CHARACTER.stepHeight&&c.top>=this.feet[1]));
     for(let pass=0;pass<4;pass++)for(const c of trees) {
       const nx=x-c.x,nz=z-c.z,distance=Math.hypot(nx,nz),radius=c.radius+CHARACTER.radius+.001;

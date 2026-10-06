@@ -72,3 +72,5 @@ kbd { color: #e6ece8; border: 1px solid #c7d6cf36; border-radius: 3px; padding: 
 .loading-line::after { content: ''; display: block; width: 50%; height: 100%; background: #c3d5b8; animation: progress 1.5s ease-in-out infinite alternate; }
 @keyframes progress { from { transform: translateX(-100%); } to { transform: translateX(200%); } }
 @media(max-width: 650px) { .masthead { top: 18px; left: 18px; } .status-pill { top: 20px; right: 18px; } .panel { bottom: 18px; left: 18px; width: 210px; } .caption { right: 18px; bottom: 135px; } .vitals { right: 18px; bottom: 22px; width: 130px; } .play-hint { bottom: auto; top: 78px; } }
+
+.player-nickname{position:fixed;transform:translate(-50%,-100%);pointer-events:none;color:white;background:#10191fb8;border-radius:4px;padding:3px 7px;font-size:13px;z-index:3}

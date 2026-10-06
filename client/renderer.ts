@@ -1,3 +1,4 @@
+import {capsuleGeometry} from './player-geometry';
 import {naturalId,quaternion,worldPoint,destructionRule,type SolidRecord} from '../shared/destruction';
 import {survivingFoliage} from './damaged-foliage';
 import {meshVolumeRegion,mergeVolumeRegions,type VolumeMesh,type VolumeRegion} from '../shared/volume';
@@ -76,6 +77,7 @@ export class IslandRenderer {
   private damaged=new Map<string,DamageDraw>();private treeGeometry=new Map<string,GeometryData[]>();private damageVisibility='';private damageGeometryRevision=0;
   private scenerySignature='';
   private visibleBatches:Batch[]=[];
+  remotePlayers:{id:string;nickname:string;feet:[number,number,number]}[]=[];private labels=new Map<string,HTMLElement>();
   buildScene?:BuildScene;
   buildPreview:{prop:Prop;valid:boolean;motion:number}|null=null;
   private previewPipeline!:GPURenderPipeline;
@@ -326,6 +328,7 @@ export class IslandRenderer {
     const bakePipeline=await this.device.createRenderPipelineAsync({label:'Bake distant tree surfaces',layout:sceneLayout,vertex:{module:bakeModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:bakeModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float'},{format:'rgba16float'}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil});
     await this.impostors.bake(48,bakePipeline,this.frameLayout,this.shadowTexture,this.materials,this.lightingUniform);
     this.assertActive();
+    this.meshes.set('player-capsule',[this.mesh(capsuleGeometry())]);
     this.waterMesh = this.mesh(oceanMesh());
     this.oceanInstance = this.upload(new Float32Array([0,0,0,1,0,0,0,1]),GPUBufferUsage.VERTEX,'Ocean anchor');
     this.resize();
@@ -471,11 +474,11 @@ export class IslandRenderer {
   }
   /** Visible local geometry is committed synchronously, before the action is
    * sent. Baseline skins are clipped only inside these small surface regions. */
-  predictSolid(record:SolidRecord,additional:VolumeRegion[]=[]){
+  predictSolid(record:SolidRecord,additional:VolumeRegion[]=[],geometry?:VolumeMesh[]){
     const previous=this.damaged.get(record.id);if(!additional.length&&!previous?.prediction)return;
-    const regions=mergeVolumeRegions([...(previous?.prediction?.regions??[]),...additional]),signature=JSON.stringify([record.volume,regions]);if(previous?.prediction?.signature===signature){previous.record=record;return;}
+    const regions=mergeVolumeRegions([...(previous?.prediction?.regions??[]),...additional]),signature=JSON.stringify([record.revision,regions,geometry?.length]);if(previous?.prediction?.signature===signature){previous.record=record;return;}
     const start=performance.now(),base=previous?.prediction?previous.prediction.base:previous;
-    const stages:number[]=[],patchGeometry=regions.flatMap(region=>meshVolumeRegion(record.source,record.volume,region,stages));
+    const stages:number[]=[],patchGeometry=geometry??regions.flatMap(region=>meshVolumeRegion(record.source,record.volume,region,stages));
     const meshMs=performance.now()-start;
     const values=new Float32Array(regions.length*8);regions.forEach((r,i)=>{values.set([...r[0],i===0?regions.length:0,...r[1],0],i*8);});
     const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Immediate cut regions'),clipGroup=this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]});
@@ -648,7 +651,7 @@ export class IslandRenderer {
     const handoff=quality.treeLod[2];
     this.write(this.farUniform,new Float32Array([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]));
     this.profiler.endStage('distantScenery',stage);stage=this.profiler.mark();
-    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}`;
+    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}/${this.remotePlayers.map(p=>p.id+':'+p.feet.join(',')).join(';')}`;
     const sceneryChanged=scenerySignature!==this.scenerySignature;
     this.scenerySignature=scenerySignature;
     if(sceneryChanged) {
@@ -685,6 +688,7 @@ export class IslandRenderer {
       }
     }
     }
+    for(const player of this.remotePlayers){const [x,y,z]=player.feet,distance=Math.hypot(x-camera.position[0],z-camera.position[2]);if(camera.visible(x,y+1,z,2,256)){const values=new Float32Array([x-camera.position[0],y-camera.position[1],z-camera.position[2],1,0,0,0,1,1,0,1]);for(const mesh of this.meshes.get('player-capsule')??[])this.append(mesh,values,false,distance);}}
     for(const solid of this.buildScene?.placed.query(camera.position[0],camera.position[2],settings.trees)??[]) {
       if(this.buildScene?.edits.get(solid.id)?.removed||this.damaged.has(solid.id))continue;
       const prop=solid.prop,distance=Math.hypot(prop.x-camera.position[0],prop.z-camera.position[2]),info=this.renderInfo(prop,settings,true),x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
@@ -697,6 +701,8 @@ export class IslandRenderer {
     this.visibleBatches=this.viewBatchGroups.flatMap(m=>[...m.values()].filter(b=>b.count).sort((a,b)=>this.frontToBack?a.nearest-b.nearest:0));
     this.casterBatches=[...this.shadowBatches.values()].filter(b=>b.count);
     }
+    const ids=new Set(this.remotePlayers.map(p=>p.id));for(const [id,label]of this.labels)if(!ids.has(id)){label.remove();this.labels.delete(id);}
+    const vp=camera.matrices(this.size[0]/this.size[1],this.distance).vp;for(const player of this.remotePlayers){let label=this.labels.get(player.id);if(!label){label=document.createElement('span');label.className='player-nickname';document.body.append(label);this.labels.set(player.id,label);}label.textContent=player.nickname;const p=[player.feet[0]-camera.position[0],player.feet[1]+2.45-camera.position[1],player.feet[2]-camera.position[2]],w=vp[3]*p[0]+vp[7]*p[1]+vp[11]*p[2]+vp[15],x=vp[0]*p[0]+vp[4]*p[1]+vp[8]*p[2]+vp[12],y=vp[1]*p[0]+vp[5]*p[1]+vp[9]*p[2]+vp[13];label.hidden=w<=0||Math.abs(x)>w||Math.abs(y)>w;label.style.left=(x/w*.5+.5)*innerWidth+'px';label.style.top=(-y/w*.5+.5)*innerHeight+'px';}
     this.profiler.endStage('scenery',stage);stage=this.profiler.mark();
     if(sceneryChanged)for (const batch of [...this.visibleBatches,...this.casterBatches])this.write(batch.buffer,batch.instances.subarray(0,batch.count*11));
     this.profiler.endStage('instanceUpload',stage);stage=this.profiler.mark();
@@ -769,7 +775,7 @@ export class IslandRenderer {
     this.gpuProfiler?.resolveInto(encoder);this.device.queue.submit([encoder.finish()]);this.gpuProfiler?.submitted();
     this.profiler.endStage('encodeSubmit',stage);
   }
-  dispose() {
+  dispose() {for(const label of this.labels.values())label.remove();this.labels.clear();
     this.disposed = true;
     this.gpuProfiler?.dispose();
     this.impostors?.dispose();
