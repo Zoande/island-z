@@ -15,6 +15,8 @@ export interface ObjectDefinition {
   readonly boxes?:readonly ObjectBox[];
   readonly asset?:'blender';readonly material?:string;
   readonly attachment?:'door'|'window'|'mount';
+  readonly supportSamples?:readonly Point3[];
+  readonly destruction?:{mode:'voxel'|'whole';hardness:number;repairable:boolean;tree?:boolean};
 }
 const definitions:ObjectDefinition[]=[
   {id:'rock',label:'Rock',family:'rock',icon:'rock',variants:[1.25,2.7].flatMap(scale=>Array.from({length:12},(_,model)=>({kind:'rock',model,scale})))},
@@ -28,14 +30,15 @@ definitions.push(
   {id:'wall-log',label:'Log wall',family:'wall',icon:'wood',variants:one('wall-log'),wall:{width:3,height:2.5,depth:.34},asset:'blender',material:'oak-bark'},
   {id:'wall-brick',label:'Brick wall',family:'wall',icon:'stone',variants:one('wall-brick'),wall:{width:3,height:2.5,depth:.26},material:'brick'},
   ...(['floor','roof']as const).flatMap(family=>(['wood','stone']as const).map(material=>({id:`${family}-${material}`,label:`${material==='wood'?'Timber':'Stone'} ${family}`,family,icon:family,variants:one(`${family}-${material}`),slab:{width:3,depth:3,height:.20},material:`wall-${material}`}))),
-  {id:'torch-wall',label:'Wall torch',family:'attachment',icon:'torch',variants:one('torch-wall'),attachment:'mount',boxes:[{center:[0,.42,.12],size:[.30,.84,.28]}],light:{height:.90,radius:18,color:[1,.42,.10],power:70,offset:[0,0,.12]}},
+  {id:'torch-wall',label:'Wall torch',family:'attachment',icon:'torch',variants:one('torch-wall'),attachment:'mount',supportSamples:[[-.12,.15,-.02],[.12,.15,-.02],[-.12,.70,-.02],[.12,.70,-.02]],boxes:[{center:[0,.42,.12],size:[.30,.84,.28]}],light:{height:.90,radius:18,color:[1,.42,.10],power:70,offset:[0,0,.12]}},
   {id:'campfire',label:'Campfire',family:'fixture',icon:'fire',variants:one('campfire'),fixture:{radius:.68,height:.35},asset:'blender',light:{height:.55,radius:15,color:[1,.37,.08],power:90}},
   {id:'bed',label:'Bed',family:'furniture',icon:'bed',variants:one('bed'),boxes:[{center:[0,.37,0],size:[1.3,.74,2.1]},{center:[0,.68,-1],size:[1.35,1.36,.13]}],asset:'blender'},
   {id:'table',label:'Table',family:'furniture',icon:'table',variants:one('table'),boxes:[{center:[0,.76,0],size:[1.6,.12,.85]},...[-.65,.65].flatMap(x=>[-.30,.30].map(z=>({center:[x,.36,z]as Point3,size:[.13,.72,.13]as Point3})))],asset:'blender'},
   {id:'chair',label:'Chair',family:'furniture',icon:'chair',variants:one('chair'),boxes:[{center:[0,.23,0],size:[.54,.46,.54]},{center:[0,.68,-.24],size:[.56,.5,.10]}],asset:'blender'},
   ...(['door-wood','door-reinforced']as const).map(id=>({id,label:id==='door-wood'?'Timber door':'Braced door',family:'attachment' as const,icon:'door',variants:one(id),attachment:'door' as const,boxes:[{center:[0,1.14,0]as Point3,size:[1.10,2.28,.08]as Point3}],asset:'blender' as const})),
-  {id:'window',label:'Window',family:'attachment',icon:'window',variants:one('window'),attachment:'window',boxes:[{center:[-.60,.525,0],size:[.10,1.05,.14]},{center:[.60,.525,0],size:[.10,1.05,.14]},{center:[0,.05,0],size:[1.3,.10,.14]},{center:[0,1,0],size:[1.3,.10,.14]},{center:[0,.525,0],size:[.045,.95,.07]}],asset:'blender'},
+  {id:'window',label:'Window',family:'attachment',icon:'window',variants:one('window'),attachment:'window',supportSamples:[[-.65,.2,0],[-.65,.8,0],[.65,.2,0],[.65,.8,0],[0,0,0],[0,1.05,0]],boxes:[{center:[-.60,.525,0],size:[.10,1.05,.14]},{center:[.60,.525,0],size:[.10,1.05,.14]},{center:[0,.05,0],size:[1.3,.10,.14]},{center:[0,1,0],size:[1.3,.10,.14]},{center:[0,.525,0],size:[.045,.95,.07]}],asset:'blender'},
 );
+for(const d of definitions){const voxel=['rock','tree','wall','floor','roof'].includes(d.family);Object.assign(d,{destruction:{mode:voxel?'voxel':'whole',hardness:d.family==='rock'||d.id.includes('stone')?2.5:d.id.includes('brick')?2:1,repairable:['wall','floor','roof'].includes(d.family),tree:d.family==='tree'}});}
 /** Stable save/network IDs. New object types register dimensions, assets and rules here. */
 export const objectRegistry:ReadonlyMap<string,ObjectDefinition>=new Map(definitions.map(definition=>[definition.id,Object.freeze({...definition,variants:Object.freeze(definition.variants.map(v=>Object.freeze(v))),wall:definition.wall&&Object.freeze(definition.wall),slab:definition.slab&&Object.freeze(definition.slab),boxes:definition.boxes&&Object.freeze(definition.boxes.map(b=>Object.freeze({center:Object.freeze(b.center)as unknown as Point3,size:Object.freeze(b.size)as unknown as Point3}))),fixture:definition.fixture&&Object.freeze(definition.fixture),light:definition.light&&Object.freeze({...definition.light,color:Object.freeze(definition.light.color),offset:definition.light.offset&&Object.freeze(definition.light.offset)})})]));
 export const hotbarSlots:readonly(readonly string[]|null)[]=Object.freeze([

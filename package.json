@@ -15,13 +15,24 @@
     "assets:bushes": "python scripts/build_bushes.py",
     "assets:palms": "python scripts/build_palms.py",
     "assets:catalogue": "python scripts/build_catalogue.py",
-    "assets:materials": "python scripts/build_materials.py"
+    "assets:materials": "python scripts/build_materials.py",
+    "assets:solids": "tsx scripts/prepare-solid-templates.ts",
+    "check:destruction": "tsx scripts/check-destruction.ts",
+    "check:prediction": "tsx scripts/check-prediction.ts",
+    "check:solids": "tsx scripts/check-solid-workers.ts",
+    "benchmark:destruction": "tsx scripts/benchmark-destruction.ts"
   },
   "dependencies": {
-    "gl-matrix": "^3.4.4"
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "earcut": "^3.2.4",
+    "gl-matrix": "^3.4.4",
+    "meshoptimizer": "^1.3.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
+    "@types/earcut": "^3.0.0",
     "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.2",
     "@webgpu/types": "^0.1.69",
     "playwright": "^1.55.0",
     "tsx": "^4.20.0",

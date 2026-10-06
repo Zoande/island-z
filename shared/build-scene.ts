@@ -9,15 +9,21 @@ import {buildProp,objectDefinition,type BuildObject,BUILD_REACH} from './object-
 import {boxShape,type ConvexShape} from './convex';
 import {SpatialIndex} from './spatial-index';
 import {boxColliders} from './build-parts';
-export interface BuildSolid {id:string;prop:Prop;collider:CharacterCollider;shape:ConvexShape;colliders:CharacterCollider[];shapes:ConvexShape[];object?:BuildObject}
+import type {CollisionBox} from './volume-collision';
+import {worldPoint,quaternion} from './destruction';
+import {naturalId,volumeRay,recordFor,treeSolidAssets,isTree,type SolidRecord,destructionRule} from './destruction';
+export interface BuildSolid {id:string;prop:Prop;collider:CharacterCollider;shape:ConvexShape;colliders:CharacterCollider[];shapes:ConvexShape[];object?:BuildObject;record?:SolidRecord}
 export interface BuildHit {point:Point3;distance:number;solid?:BuildSolid}
 /** A renderer-independent canonical 2m terrain surface and bounded scenery cache.
  * Both previews and authoritative validation sample the same triangles. */
 export class BuildScene {
   readonly placed=new SpatialIndex<BuildSolid>();revision=0;terrainRevision=0;
+  readonly damageCollision=new Map<string,{revision:number;shapes:ConvexShape[];colliders:CharacterCollider[]}>();
+  readonly edits=new Map<string,SolidRecord>();readonly editedCollisionReady=new Set<string>();readonly openings=new Map<string,'door'|'window'|null>();
+  readonly leveling=new Map<string,BuildObject>();private permanentFloors=new SpatialIndex<BuildObject>();
   private floors=new SpatialIndex<BuildObject>();
   readonly rocks:Point3[][];
-  private natural=new Map<string,BuildSolid[]>();private heights=new Map<string,number>();
+  private solidSources=new WeakMap<BuildSolid,SolidRecord>();private natural=new Map<string,BuildSolid[]>();private heights=new Map<string,number>();
   constructor(readonly world:WorldGenerator){this.rocks=Array.from({length:12},(_,i)=>rockPoints(world.config.seed,i));}
   terrain(x:number,z:number):MeshSurface {
     const cx=Math.floor(x/2)*2,cz=Math.floor(z/2)*2,u=(x-cx)/2,v=(z-cz)/2;
@@ -31,7 +37,7 @@ export class BuildScene {
    * prevent terrain triangles poking through rotated thin floor slabs. */
   grade(x:number,z:number,original:number):number {
     let result=original;
-    for(const floor of this.floors.query(x,z,0)){
+    for(const floor of [...this.floors.query(x,z,0),...this.permanentFloors.query(x,z,0)]){
       const slab=objectDefinition(floor.definitionId).slab!,dx=x-floor.position[0],dz=z-floor.position[2],c=Math.cos(floor.rotation),s=Math.sin(floor.rotation);
       const distance=Math.hypot(Math.max(0,Math.abs(dx*c-dz*s)-slab.width/2),Math.max(0,Math.abs(dx*s+dz*c)-slab.depth/2));
       if(distance>=4)continue;
@@ -39,7 +45,7 @@ export class BuildScene {
       result=Math.min(result,original-Math.min(.4,Math.max(0,original-floor.position[1]+.015))*weight);
     }return result;
   }
-  gradingSignature(x:number,z:number,extent:number):string{return this.floors.query(x+extent/2,z+extent/2,extent*.71+7).filter(o=>Math.abs(o.position[0]-(x+extent/2))<extent/2+7&&Math.abs(o.position[2]-(z+extent/2))<extent/2+7).map(o=>JSON.stringify(o)).sort().join('|');}
+  gradingSignature(x:number,z:number,extent:number):string{return [...this.floors.query(x+extent/2,z+extent/2,extent*.71+7),...this.permanentFloors.query(x+extent/2,z+extent/2,extent*.71+7)].filter(o=>Math.abs(o.position[0]-(x+extent/2))<extent/2+7&&Math.abs(o.position[2]-(z+extent/2))<extent/2+7).map(o=>JSON.stringify(o)).sort().join('|');}
   floorAt(x:number,z:number):boolean {return this.floors.query(x,z,0).some(o=>{const a=objectDefinition(o.definitionId).slab!,dx=x-o.position[0],dz=z-o.position[2],c=Math.cos(o.rotation),s=Math.sin(o.rotation);return Math.abs(dx*c-dz*s)<=a.width/2+.1&&Math.abs(dx*s+dz*c)<=a.depth/2+.1;});}
   solid(prop:Prop,id:string,object?:BuildObject):BuildSolid {
     const boxes=boxColliders(prop),collider=boxes?.length?{kind:'wall' as const,x:prop.x,z:prop.z,bottom:Math.min(...boxes.map(b=>b.bottom)),top:Math.max(...boxes.map(b=>b.top)),radius:Math.max(...boxes.map(b=>Math.hypot(b.x-prop.x,b.z-prop.z)+b.radius)),wall:boxes[0].wall}:playerCollider(prop,this.rocks[prop.variant]);if(!collider)throw new Error('Object has no physical shape');
@@ -49,8 +55,8 @@ export class BuildScene {
       const q=orientation(prop.normal??[0,1,0],prop.rotation),points=this.rocks[prop.variant].map(p=>{const v=rotate([p[0]*prop.scale,p[1]*prop.scale,p[2]*prop.scale],q);return [v[0]+prop.x,v[1]+prop.y,v[2]+prop.z] as Point3;});
       shape={kind:'hull',points,center:[prop.x,(collider.bottom+collider.top)/2,prop.z]};
     }else shape={kind:'cylinder',center:[prop.x,(collider.top+collider.bottom)/2,prop.z],radius:collider.radius,halfHeight:(collider.top-collider.bottom)/2};
-    const colliders=boxes??[collider],shapes=boxes?boxes.map(c=>boxShape([c.x,(c.bottom+c.top)/2,c.z],[c.wall!.halfWidth,(c.top-c.bottom)/2,c.wall!.halfDepth],c.wall!.yaw)):[shape];
-    return {id,prop,collider,shape,colliders,shapes,object};
+    let colliders=boxes??[collider],shapes=boxes?boxes.map(c=>boxShape([c.x,(c.bottom+c.top)/2,c.z],[c.wall!.halfWidth,(c.top-c.bottom)/2,c.wall!.halfDepth],c.wall!.yaw)):[shape];
+    const cooked=this.damageCollision.get(id);if(cooked&&cooked.revision===this.edits.get(id)?.revision){shapes=cooked.shapes;colliders=cooked.colliders;}return {id,prop,collider,shape,colliders,shapes,object,record:this.edits.get(id)};
   }
   naturalAt(x:number,z:number,radius:number):BuildSolid[] {
     const result:BuildSolid[]=[];
@@ -60,39 +66,47 @@ export class BuildScene {
         solids=this.world.props(tx,tz,64,false).map(prop=>{
           const surface=this.terrain(prop.x,prop.z),placed={...prop,y:surface.height-.20};
           if(prop.kind==='rock'){placed.normal=surface.normal;placed.y=embeddedRockHeight(this.rocks[prop.variant],prop.x,prop.z,prop.scale,orientation(surface.normal,prop.rotation),(x,z)=>this.terrain(x,z).height);}
-          return this.solid(placed,`natural:${prop.kind}:${prop.x.toFixed(8)}:${prop.z.toFixed(8)}`);
+          return this.solid(placed,naturalId(prop));
         });
         this.natural.set(key,solids);if(this.natural.size>128)this.natural.delete(this.natural.keys().next().value!);
       }
-      for(const solid of solids)if(Math.hypot(solid.prop.x-x,solid.prop.z-z)<=radius+solid.collider.radius)result.push(solid);
+      for(const solid of solids)if(Math.hypot(solid.prop.x-x,solid.prop.z-z)<=radius+(isTree(solid.prop)?treeRadius(solid.prop):solid.collider.radius)&&!this.edits.get(solid.id)?.removed){solid.record=this.edits.get(solid.id);result.push(solid);}
     }
     return result;
   }
-  nearby(x:number,z:number,radius:number):BuildSolid[]{return [...this.naturalAt(x,z,radius),...this.placed.query(x,z,radius)];}
+  nearby(x:number,z:number,radius:number):BuildSolid[]{const fragments:BuildSolid[]=[];for(const r of this.edits.values())if(r.fragmentOf&&!r.removed){const p=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z],b=r.fragmentBounds??r.source.bounds,reach=Math.hypot(...b[1].map((v,k)=>Math.max(Math.abs(v),Math.abs(b[0][k]))))*r.prop.scale;if(Math.hypot(p[0]-x,p[2]-z)<=radius+reach)fragments.push(this.solid(r.prop,r.id));}return [...this.naturalAt(x,z,radius),...this.placed.query(x,z,radius),...fragments];}
   private refreshWall(id:string){const parent=this.placed.get(id);if(!parent?.object||!objectDefinition(parent.object.definitionId).wall)return;
     const child=this.placed.query(parent.prop.x,parent.prop.z,3).find(s=>s.object?.support.kind==='wall'&&s.object.support.id===id&&['door','window'].includes(objectDefinition(s.object.definitionId).attachment??''));
-    const prop=buildProp(parent.object);if(child)prop.aperture=objectDefinition(child.object!.definitionId).attachment as 'door'|'window';
+    const prop=buildProp(parent.object);if(child)prop.aperture=objectDefinition(child.object!.definitionId).attachment as 'door'|'window';else if(this.openings.get(id))prop.aperture=this.openings.get(id)!;
     const solid=this.solid(prop,id,parent.object);this.placed.insert(id,solid,prop.x,prop.z,solid.collider.radius);
   }
   add(object:BuildObject){const previous=this.placed.get(object.id)?.object,solid=this.solid(buildProp(object),object.id,object);this.placed.insert(object.id,solid,solid.prop.x,solid.prop.z,solid.collider.radius);
     if(objectDefinition(object.definitionId).family==='floor'&&JSON.stringify(previous)!==JSON.stringify(object)){this.floors.insert(object.id,object,object.position[0],object.position[2],7);this.terrainRevision++;this.natural.clear();}
     this.refreshWall(object.id);if(object.support.kind==='wall')this.refreshWall(object.support.id);this.revision++;return this.placed.get(object.id)!;}
-  remove(id:string){const object=this.placed.get(id)?.object;if(object){this.placed.remove(id);if(objectDefinition(object.definitionId).family==='floor'){this.floors.remove(id);this.terrainRevision++;this.natural.clear();}if(object.support.kind==='wall')this.refreshWall(object.support.id);this.revision++;}}
-  colliders(x:number,z:number,radius=12):CharacterCollider[]{return this.placed.query(x,z,radius).flatMap(s=>s.colliders);}
+  remove(id:string,permanent=false){const object=this.placed.get(id)?.object;if(object){if(permanent&&objectDefinition(object.definitionId).family==='floor')this.keepLeveling(object);if(permanent&&object.support.kind==='wall'&&objectDefinition(object.definitionId).attachment&&['door','window'].includes(objectDefinition(object.definitionId).attachment!))this.openings.set(object.support.id,objectDefinition(object.definitionId).attachment as 'door'|'window');this.placed.remove(id);if(objectDefinition(object.definitionId).family==='floor'){this.floors.remove(id);this.terrainRevision++;this.natural.clear();}if(object.support.kind==='wall')this.refreshWall(object.support.id);this.revision++;}}
+  keepLeveling(object:BuildObject){if(JSON.stringify(this.leveling.get(object.id))===JSON.stringify(object))return;this.leveling.set(object.id,object);this.permanentFloors.insert(object.id,object,object.position[0],object.position[2],7);this.terrainRevision++;this.natural.clear();}
+  forgetLeveling(id:string){if(this.leveling.delete(id)){this.permanentFloors.remove(id);this.terrainRevision++;}}
+  setDamageCollision(record:SolidRecord,boxes:CollisionBox[]){const shapes:ConvexShape[]=[],colliders:CharacterCollider[]=[];for(const box of boxes){const points=[0,1,2,3,4,5,6,7].map(n=>worldPoint(record,box.center.map((v,k)=>v+box.half[k]*(n&(1<<k)?1:-1))as Point3)),center=worldPoint(record,box.center);shapes.push({kind:'hull',points,center});const q=quaternion(record),upright=Math.abs(q[0])+Math.abs(q[2])<.001;if(upright)colliders.push({kind:'wall',x:center[0],z:center[2],bottom:center[1]-box.half[1]*record.prop.scale,top:center[1]+box.half[1]*record.prop.scale,radius:Math.hypot(box.half[0],box.half[2])*record.prop.scale,wall:{halfWidth:box.half[0]*record.prop.scale,halfDepth:box.half[2]*record.prop.scale,yaw:2*Math.atan2(q[1],q[3])}});}this.damageCollision.set(record.id,{revision:record.revision,shapes,colliders});const placed=this.placed.get(record.id);if(placed){placed.shapes=shapes;placed.colliders=colliders;}this.revision++;}
+  applyRecord(record:SolidRecord){this.edits.set(record.id,record);if(record.removed)this.remove(record.id,true);else{const solid=this.placed.get(record.id);if(solid)solid.record=record;}this.revision++;}
+  setOpening(id:string,kind:'door'|'window'|null){if(this.openings.get(id)===kind)return;this.openings.set(id,kind);this.refreshWall(id);this.revision++;}
+  destructible(id:string):BuildSolid|undefined{const placed=this.placed.get(id);if(placed)return placed;const record=this.edits.get(id);if(record&&!record.removed)return this.solid(record.prop,id,record.object);return;}
+  colliders(x:number,z:number,radius=12):CharacterCollider[]{return this.placed.query(x,z,radius).filter(s=>!this.edits.get(s.id)?.removed&&!this.editedCollisionReady.has(s.id)).flatMap(s=>s.colliders);}
   standingHeight(x:number,z:number,feetY=Infinity):number {
     let height=this.terrain(x,z).height;
     for(const solid of this.nearby(x,z,1)) {
+      if(solid.record){const start=Math.min(Number.isFinite(feetY)?feetY+.5:solid.collider.top+.5,solid.collider.top+.5),hit=volumeRay(solid.record,[x,start,z],[0,-1,0],Math.max(0,start-height));if(hit)height=Math.max(height,hit.point[1]);continue;}
       for(const c of solid.colliders){
       if(c.kind==='rock')height=Math.max(height,rockSurface(c,x,z)?.height??height);
       if(c.kind==='wall'&&c.top<=feetY+.5&&wallContains(c,x,z,.32))height=Math.max(height,c.top);}
     }
     return height;
   }
-  raycast(eye:Point3,direction:Point3,limit=BUILD_REACH):BuildHit|null {
+  raycast(eye:Point3,direction:Point3,limit=BUILD_REACH,repair=false,volumetric=false):BuildHit|null {
     let distance=limit+1,closest:BuildSolid|undefined;
     for(const solid of this.nearby(eye[0]+direction[0]*limit/2,eye[2]+direction[2]*limit/2,limit/2+1)) {
-      const hit=solidRay(solid,eye,direction,limit);if(hit!==null&&hit<distance){distance=hit;closest=solid;}
+      let record=this.edits.get(solid.id);if(record?.removed)continue;if(!record&&volumetric&&destructionRule(solid.prop)?.mode==='voxel'){record=this.solidSources.get(solid);if(!record){record=recordFor(solid.id,solid.prop,this.rocks,solid.object);this.solidSources.set(solid,record);}}const hit=record?volumeRay(record,eye,direction,limit,repair&&!!solid.object&&!!destructionRule(record.prop)?.repairable)?.distance??null:solidRay(solid,eye,direction,limit);if(hit!==null&&hit<distance){distance=hit;closest={...solid,record};}
     }
+    for(const record of this.edits.values())if(record.fragmentOf&&!record.removed){const hit=volumeRay(record,eye,direction,limit);if(hit&&hit.distance<distance){distance=hit.distance;closest={...this.solid(record.prop,record.id),record};}}
     const terrainDistance=(t:number)=>eye[1]+direction[1]*t-this.terrain(eye[0]+direction[0]*t,eye[2]+direction[2]*t).height;
     let previous=0;
     for(let t=0;t<=Math.min(limit,distance)+.0001;t+=.20) {
@@ -127,3 +141,6 @@ export function solidRay(s:BuildSolid,o:Point3,d:Point3,limit:number):number|nul
   }
   return nearest<=limit?nearest:null;
 }
+
+const treeRadii=new Map<string,number>();
+function treeRadius(p:Prop){const key=`${p.kind}-${p.variant}`;let radius=treeRadii.get(key);if(radius===undefined){radius=0;for(const s of treeSolidAssets.get(key)?.primitives??[])if(s.type==='capsule')radius=Math.max(radius,Math.hypot(s.a[0],s.a[2])+s.r0,Math.hypot(s.b[0],s.b[2])+s.r1);treeRadii.set(key,radius);}return radius*p.scale;}

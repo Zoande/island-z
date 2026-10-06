@@ -1,0 +1,44 @@
+import {describe,it,expect} from 'vitest';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {BuildStore} from '../server/build-store';
+import {DestructionStore} from '../server/destruction-store';
+import {solvePlacement} from '../shared/build-placement';
+import {CHARACTER} from '../shared/character';
+import {recordFor,actionBrush,volumeRay,worldPoint,localPoint,type WorldAction} from '../shared/destruction';
+import {SparseVolume,solidSource,emptyVolume,meshVolume} from '../shared/volume';
+import {solidComponents} from '../shared/solid-components';
+import {initializeMeshRefinement,collisionSurfaceMeshes} from '../shared/mesh-refinement';
+import {collisionBoxes} from '../shared/volume-collision';
+import {SolidPhysics,initializePhysics} from '../shared/solid-physics';
+import type {BuildRequest} from '../shared/object-registry';
+const config={seed:'building-server-test',islandSizeMeters:1024};
+function site(store:BuildStore,definitionId='wall-wood'){
+  for(let z=40;z<200;z+=7)for(let x=-100;x<100;x+=7){const h=store.scene.terrain(x,z).height,feet:[number,number,number]=[x,store.scene.terrain(x,z+3).height,z+3],eye:[number,number,number]=[x,feet[1]+CHARACTER.eyeHeight,z+3],dy=h-eye[1],l=Math.hypot(dy,3),request:BuildRequest={requestId:'damage-building-01',worldKey:store.worldKey,definitionId,variant:0,rotation:0,eye,feet,direction:[0,dy/l,-3/l],standing:true};if(solvePlacement(store.scene,request).valid)return request;}throw new Error('No site');
+}
+function request(store:BuildStore,id:string,requestId:string,action:'cut'|'repair'|'dismantle'='cut'):WorldAction{const s=store.scene.placed.get(id)!,p=s.prop,eye:[number,number,number]=[p.x,p.y+1.2,p.z+2],feet:[number,number,number]=[p.x,p.y+1.2-CHARACTER.eyeHeight,p.z+2];return {requestId,worldKey:store.worldKey,sessionId:requestId,targetId:id,targetRevision:store.scene.edits.get(id)?.revision??0,action,eye,feet,direction:[0,0,-1]};}
+describe('authoritative destruction and repair',()=>{
+  it('persists precise damage, rejects stale and duplicate payloads, and restores after checkpoint',async()=>{
+    const prefix=join(tmpdir(),'island-z-damage-'),directory=mkdtempSync(prefix),builds=new BuildStore(config,directory),edits=new DestructionStore(builds,directory);
+    try{const placed=builds.place(site(builds));expect(placed.ok).toBe(true);if(!placed.ok)return;const a=request(builds,placed.object.id,'first-cut-00001'),result=await edits.action(a);expect(result.ok).toBe(true);if(!result.ok)return;expect(await edits.action(a)).toEqual(result);expect(await edits.action({...a,eye:[a.eye[0]+.1,a.eye[1],a.eye[2]]})).toMatchObject({ok:false,code:'request-id'});expect(await edits.action({...a,sessionId:'other-session',requestId:'stale-cut-0001'})).toMatchObject({ok:false,code:'revision'});
+      const r=builds.scene.edits.get(placed.object.id)!;expect(r.removed).not.toBe(true);expect(Object.keys(r.volume.bricks).length).toBeGreaterThan(0);const before=JSON.stringify(r.volume);edits.compact();const restored=new BuildStore(config,directory),reload=new DestructionStore(restored,directory);try{reload.hydrateNear(r.prop.x,r.prop.z);expect(JSON.stringify(restored.scene.edits.get(r.id)!.volume)).toBe(before);expect(await reload.action(a)).toEqual(result);}finally{reload.dispose();}
+      expect(readFileSync(join(directory,builds.worldKey+'.edits.snapshot.json'),'utf8')).not.toContain('owner');
+    }finally{edits.dispose();if(!resolve(directory).startsWith(resolve(prefix)))throw new Error('Bad test path');rmSync(directory,{recursive:true,force:true});}
+  },30000);
+  it('dismantles a whole build once, with a persistent tombstone',async()=>{const builds=new BuildStore(config),edits=new DestructionStore(builds);try{const p=builds.place(site(builds,'bed'));expect(p.ok).toBe(true);if(!p.ok)return;const a=request(builds,p.object.id,'remove-bed-00001','dismantle');a.eye[1]=p.object.position[1]+.4;a.feet[1]=a.eye[1]-CHARACTER.eyeHeight;const result=await edits.action(a);expect(result.ok).toBe(true);expect(builds.scene.placed.get(p.object.id)).toBeUndefined();expect(builds.scene.edits.get(p.object.id)?.removed).toBe(true);expect(await edits.action(a)).toEqual(result);}finally{edits.dispose();}},30000);
+  it('rejects invalid pose, cadence, wrong world, and attempts to cut terrain',async()=>{const b=new BuildStore(config),e=new DestructionStore(b);try{const p=b.place(site(b));if(!p.ok)throw new Error(p.error);const a=request(b,p.object.id,'validated-cut-01');expect(await e.action({...a,direction:[0,0,-2]})).toMatchObject({ok:false,code:'request'});expect(await e.action({...a,worldKey:'wrong'})).toMatchObject({ok:false,code:'world'});expect(await e.action({...a,targetId:'terrain'})).toMatchObject({ok:false,code:'target'});expect((await e.action(a)).ok).toBe(true);const next={...request(b,p.object.id,'too-fast-cut-01'),sessionId:a.sessionId};e['cadence'].set(a.sessionId,Date.now());expect(await e.action(next)).toMatchObject({ok:false,code:'cadence'});}finally{e.dispose();}},30000);
+});
+describe('solid geometry and collision foundations',()=>{
+  it('cuts stone less deeply than wood and transforms brushes on tilted rocks',()=>{const b=new BuildStore(config),p=b.place(site(b));if(!p.ok)throw new Error(p.error);const wood=recordFor('wood',{kind:'wall-wood',x:0,y:0,z:0,scale:1,variant:0,rotation:0},b.scene.rocks),stone=recordFor('stone',{...wood.prop,kind:'wall-stone'},b.scene.rocks),a=actionBrush(wood,[0,1,.11],[0,0,-1],false,1),c=actionBrush(stone,[0,1,.16],[0,0,-1],false,1);expect(a.radius).toBeGreaterThan(c.radius);expect(a.depth).toBeCloseTo(.1);expect(c.depth).toBeCloseTo(.04);const rock=recordFor('rock',{kind:'rock',x:1000,y:100,z:-3000,scale:2.7,variant:2,rotation:.9,normal:[.3,Math.sqrt(.82),.3]},b.scene.rocks),v:[number,number,number]=[.3,.2,.4];expect(localPoint(rock,worldPoint(rock,v))).toEqual(expect.arrayContaining(v.map(n=>expect.closeTo(n,6))));});
+  it('detects truly disconnected material and does not fill holes with compound colliders',()=>{const source=solidSource([{type:'box',center:[0,.5,0],half:[.3,.5,.1],material:'wall-wood'}]),v=new SparseVolume(source);v.edit({center:[0,.45,0],axis:[0,0,1],radius:0,depth:0,seed:1,box:[.4,.06,.2]});expect(solidComponents(source,v.state,.025)).toHaveLength(2);const boxes=collisionBoxes(source,v.state);expect(boxes.length).toBeGreaterThan(1);expect(boxes.every(b=>!(Math.abs(b.center[1]-.45)<b.half[1]-.001))).toBe(true);});
+  it('retains stepping over low edited surfaces and blocks surfaces above the step height',async()=>{
+    await initializePhysics();await initializeMeshRefinement();
+    for(const high of [.2,.5]){const source=solidSource([{type:'box',center:[0,high/2,0],half:[1,high/2,.4],material:'wall-wood'}]),record=recordFor('step-'+high,{kind:'wall-wood',x:0,y:0,z:0,scale:1,variant:0,rotation:0},[]),physics=new SolidPhysics();
+      try{physics.add(record,[],collisionSurfaceMeshes(meshVolume(source,emptyVolume())),false);physics.ground(-32,-32,()=>0);physics.step();let feet:[number,number,number]=[0,.003,1];for(let i=0;i<30;i++)feet=physics.movement(feet,[0,-.001, -.04],CHARACTER.radius,CHARACTER.height,CHARACTER.stepHeight,CHARACTER.snapDistance).feet;
+        if(high<CHARACTER.stepHeight){expect(feet[2]).toBeLessThan(.3);expect(feet[1]).toBeGreaterThan(.18);}else expect(feet[2]).toBeGreaterThan(.6);
+      }finally{physics.dispose();}
+    }
+  });
+  it('allows the standing capsule through an actual opening and keeps shallow damage solid',async()=>{await initializePhysics();await initializeMeshRefinement();const source=solidSource([{type:'box',center:[0,1.25,0],half:[1.5,1.25,.11],material:'wall-wood'}]),v=new SparseVolume(source);v.edit({center:[0,1.1,0],axis:[0,0,1],radius:0,depth:0,seed:1,box:[.45,1.12,.2]});const record=recordFor('passage',{kind:'wall-wood',x:0,y:0,z:0,scale:1,variant:0,rotation:0},[]);record.volume=v.state;const physics=new SolidPhysics();try{physics.add(record,collisionBoxes(source,v.state),collisionSurfaceMeshes(meshVolume(source,v.state)),false);let feet:[number,number,number]=[0,0,1];for(let i=0;i<30;i++)feet=physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,.28,0).feet;expect(feet[2]).toBeLessThan(-.5);feet=[.8,0,1];for(let i=0;i<30;i++)feet=physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,.28,0).feet;expect(feet[2]).toBeGreaterThan(.3);}finally{physics.dispose();}},30000);
+});

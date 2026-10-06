@@ -19,6 +19,15 @@ function clearRequest(store:BuildStore,definitionId='wall-wood'):BuildRequest {
   throw new Error('No clear build site');
 }
 describe('authoritative building saves and protocol',()=>{
+  it('checkpoints active builds, independent floor grading, and empty openings without resurrecting removed objects',()=>{
+    const prefix=join(tmpdir(),'island-z-build-checkpoint-'),directory=mkdtempSync(prefix);
+    try{
+      const store=new BuildStore(config,directory),request={...clearRequest(store,'floor-wood'),requestId:'checkpoint-floor'},result=store.place(request);expect(result.ok).toBe(true);if(!result.ok)return;
+      const floor=result.object;store.scene.setOpening('removed-wall','door');store.applyWorldPatch({revision:1,solids:[],removedBuilds:[floor.id],leveling:[floor],openings:[]});store.compact();
+      expect(readFileSync(join(directory,store.worldKey+'.builds.snapshot.json'),'utf8')).not.toContain('owner');const restored=new BuildStore(config,directory);expect(restored.scene.placed.size).toBe(0);expect(restored.scene.leveling.get(floor.id)).toEqual(floor);expect(restored.scene.openings.get('removed-wall')).toBe('door');expect(restored.place(request)).toMatchObject({ok:false,code:'removed'});
+      const next={...clearRequest(restored,'torch'),requestId:'checkpoint-new-torch'};expect(restored.place(next).ok).toBe(true);restored.compact();const again=new BuildStore(config,directory);expect(again.scene.placed.size).toBe(1);expect(again.scene.leveling.get(floor.id)).toEqual(floor);
+    }finally{if(!resolve(directory).startsWith(resolve(prefix)))throw new Error('Unexpected test directory');rmSync(directory,{recursive:true,force:true});}
+  });
   it('persists torches with stable registry IDs and reconstructs their physical shape after restart',()=>{
     const prefix=join(tmpdir(),'island-z-torch-'),directory=mkdtempSync(prefix);
     try {

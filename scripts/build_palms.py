@@ -1,5 +1,6 @@
 """Three curved coconut palms with actual fruit clusters and three LODs."""
 import math
+import json
 import os
 import random
 import subprocess
@@ -48,6 +49,14 @@ def build():
             for i in range(rings):
                 for j in range(sides):a=i*(sides+1)+j;faces.append((a,a+1,a+sides+2,a+sides+1))
             objects.append(object_mesh(f'palm-{variant}-lod{lod}-trunk',verts,faces,uv,'palm-bark'))
+            if lod == 0:
+                cv=lambda p:[p.x,p.z,-p.y]
+                tubes=[]
+                for k in range(rings):
+                    a,b=k/rings,(k+1)/rings
+                    radius=lambda t:(.30*(1-t)+.15*t)*(1+.2*math.exp(-t*24))
+                    tubes.append(dict(type='capsule',a=cv(trunk(a)),b=cv(trunk(b)),r0=radius(a),r1=radius(b),material='palm-bark'))
+                (ROOT/f'public/models/palm-{variant}-solid.json').write_text(json.dumps(dict(version=1,primitives=tubes,foliageAnchors=[cv(trunk(1))])))
             crown=trunk(1)
             for dry in (False,True):
                 verts=[];faces=[];uv=[]

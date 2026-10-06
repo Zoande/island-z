@@ -4,6 +4,7 @@ Models use named shared materials; images remain in the central texture catalog.
 Run npm run assets:trees. BLENDER_PATH overrides the locally installed executable.
 """
 import math
+import json
 import os
 import random
 import subprocess
@@ -64,7 +65,13 @@ def build():
         bark_verts, bark_faces, bark_uv = [], [], []
         leaf_verts, leaf_faces, leaf_uv = [], [], []
         sides = [9, 6, 5][lod]
+        solid_tubes = []
         def tube(points, start_radius, end_radius):
+            if max(start_radius, end_radius) > 0:
+                for k in range(len(points)-1):
+                    f0, f1 = k/(len(points)-1), (k+1)/(len(points)-1)
+                    cv = lambda p: [p.x, p.z, -p.y]
+                    solid_tubes.append(dict(type="capsule", a=cv(points[k]), b=cv(points[k+1]), r0=start_radius*(1-f0)+end_radius*f0, r1=start_radius*(1-f1)+end_radius*f1, material=f"{species}-bark"))
             start = len(bark_verts)
             length = 0
             for i, point in enumerate(points):
@@ -144,6 +151,15 @@ def build():
                     leaf_uv.append(uv)
                 leaf_faces.append((index, index + 1, index + 2, index + 3))
 
+        if lod == 0:
+            major=[]
+            for cap in solid_tubes:
+                if cap["r0"] < .06: continue
+                if cap["r1"] < .06:
+                    t=(cap["r0"]-.06)/(cap["r0"]-cap["r1"])
+                    cap={**cap,"b":[a+(b-a)*t for a,b in zip(cap["a"],cap["b"])],"r1":.06}
+                major.append(cap)
+            (out / f"{species}-{variant}-solid.json").write_text(json.dumps(dict(version=1, primitives=major, visualPrimitives=solid_tubes, foliageAnchors=[[p.x,p.z,-p.y] for p in leaf_centers])))
         objects = []
         for part, verts, faces, uvs in [('bark', bark_verts, bark_faces, bark_uv), ('foliage', leaf_verts, leaf_faces, leaf_uv)]:
             name = f'{species}-{variant}-lod{lod}-{part}'

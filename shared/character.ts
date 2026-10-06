@@ -8,6 +8,7 @@ export interface CharacterEnvironment {
   surface(x:number,z:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
   water?(x:number,z:number):CharacterWater|null;
+  solidMovement?(feet:[number,number,number],desired:[number,number,number],radius:number,height:number,step:number,snap:number):{feet:[number,number,number];grounded:boolean}|null;
 }
 export const CHARACTER = { radius:.32, height:2.16, eyeHeight:1.64*1.2, walkSpeed:4.5*1.15, sprintSpeed:7*1.15*1.3,
   runAcceleration:4.5,swimSpeed:3.2,swimUpSpeed:1.8,swimDownSpeed:2.4,idleSinkSpeed:.12,exhaustedSinkSpeed:.75,
@@ -178,7 +179,8 @@ export class Character {
       if(!this.grounded) {this.coyote=0;this.velocity[0]+=ground.normal[0]*CHARACTER.gravity*dt;this.velocity[2]+=ground.normal[2]*CHARACTER.gravity*dt;}
     } else this.grounded=false;
     nextY=this.ceiling(nextX,nextZ,y,nextY,colliders);
-    this.feet.set([nextX,nextY,nextZ]);
+    const solid=this.environment.solidMovement?.([x,y,z],[nextX-x,nextY-y,nextZ-z],CHARACTER.radius,CHARACTER.height,CHARACTER.stepHeight,this.swimming?0:CHARACTER.snapDistance);
+    if(solid){this.feet.set(solid.feet);if(!this.swimming&&solid.grounded){this.grounded=true;this.velocity[1]=Math.max(0,this.velocity[1]);}if(Math.abs(solid.feet[1]-nextY)>.003&&this.velocity[1]>0)this.velocity[1]=0;}else this.feet.set([nextX,nextY,nextZ]);
   }
   private ceiling(x:number,z:number,oldY:number,nextY:number,colliders:readonly CharacterCollider[]):number {
     if(nextY<=oldY)return nextY;
@@ -211,6 +213,7 @@ export class Character {
     if(this.velocity[1]>0&&nextY>surfaceFeet){nextY=Math.max(y,surfaceFeet);this.velocity[1]=0;}
     if(ground&&nextY<ground.height){nextY=ground.height;this.velocity[1]=Math.max(0,this.velocity[1]);}
     nextY=this.ceiling(nextX,nextZ,y,nextY,colliders);
-    this.feet.set([nextX,nextY,nextZ]);
+    const solid=this.environment.solidMovement?.([x,y,z],[nextX-x,nextY-y,nextZ-z],CHARACTER.radius,CHARACTER.height,CHARACTER.stepHeight,this.swimming?0:CHARACTER.snapDistance);
+    if(solid){this.feet.set(solid.feet);if(!this.swimming&&solid.grounded){this.grounded=true;this.velocity[1]=Math.max(0,this.velocity[1]);}if(Math.abs(solid.feet[1]-nextY)>.003&&this.velocity[1]>0)this.velocity[1]=0;}else this.feet.set([nextX,nextY,nextZ]);
   }
 }

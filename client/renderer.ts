@@ -1,3 +1,6 @@
+import {naturalId,quaternion,worldPoint,destructionRule,type SolidRecord} from '../shared/destruction';
+import {survivingFoliage} from './damaged-foliage';
+import {meshVolumeRegion,mergeVolumeRegions,type VolumeMesh,type VolumeRegion} from '../shared/volume';
 import { mat4 } from 'gl-matrix';
 import type { WorldConfig } from '../shared/config';
 import { BASE_CHUNK, VERTEX_FLOATS, type ChunkData } from '../shared/mesh';
@@ -12,7 +15,7 @@ import type { MeshSurface } from '../shared/placement';
 import { playerCollider } from './player-colliders';
 import { grassMesh, oceanMesh, rockMesh,compactVertices,compactIndices, type GeometryData } from './geometry';
 import { loadGLB } from './glb';
-import { sceneShader,sceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
+import { sceneShader,sceneryShader,predictedSceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
 import {wallGeometry} from './wall-geometry';
 import {torchGeometry} from './torch-geometry';
 import {mergeGeometry,slabGeometry,wallTorchGeometry,campfireFlames} from './catalogue-geometry';
@@ -27,7 +30,8 @@ import {frustumPlanes,sphereInFrustum} from './culling';
 import {lodEntries,rangeFade,type LodBoundary} from './lod';
 import {qualities,type Quality,type QualitySettings} from './quality';
 
-interface Mesh { vertex: GPUBuffer; index: GPUBuffer; indexFormat:GPUIndexFormat; count: number; material: string }
+interface Mesh { vertex: GPUBuffer; index: GPUBuffer; indexFormat:GPUIndexFormat; count: number; material: string;borrowed?:boolean;clipGroup?:GPUBindGroup }
+interface DamageDraw {record:SolidRecord;meshes:Mesh[];lods:Mesh[][];owns:boolean;prediction?:{base?:DamageDraw;regions:VolumeRegion[];signature:string;buffer:GPUBuffer}}
 interface Resident { data: ChunkData; mesh: Mesh; water?: Mesh; instance: GPUBuffer; lastUsed: number; seam?: string; placedProps?: Prop[]; colliders?:CharacterCollider[]; surfaceVertices?: Float32Array; support?: string;renderBounds?:[number,number] }
 interface Batch { mesh: Mesh; buffer: GPUBuffer; capacity: number; instances: Float32Array; count:number; shadow:boolean;nearest:number }
 interface PropRenderInfo {tree:boolean;radius:number;centerY:number;range:number;boundaries:LodBoundary[];shadowBoundaries:LodBoundary[];meshes:Mesh[][]}
@@ -69,6 +73,7 @@ export class IslandRenderer {
   private impostors!:TreeImpostors;
   private impostorPipeline!:GPURenderPipeline;
   private frameLayout!:GPUBindGroupLayout;
+  private damaged=new Map<string,DamageDraw>();private treeGeometry=new Map<string,GeometryData[]>();private damageVisibility='';private damageGeometryRevision=0;
   private scenerySignature='';
   private visibleBatches:Batch[]=[];
   buildScene?:BuildScene;
@@ -91,6 +96,11 @@ export class IslandRenderer {
   private materialLayout!: GPUBindGroupLayout;
   private scenePipeline!: GPURenderPipeline;
   private sceneryPipeline!:GPURenderPipeline;
+  private editLayout!:GPUBindGroupLayout;private editPipelines!:Record<string,GPURenderPipeline>;
+  readonly predictionTimings:{id:string;revision:number;milliseconds:number;meshMs:number;uploadMs:number;stages:number[];frame:number}[]=[];
+  private sceneryDepthPipeline!:GPURenderPipeline;
+  private sceneryEqualPipeline!:GPURenderPipeline;
+  depthPrepass=true;
   private sceneryShadowPipeline!:GPURenderPipeline;
   private shadowPipeline!: GPURenderPipeline;
   private skyPipeline!: GPURenderPipeline;
@@ -137,18 +147,18 @@ export class IslandRenderer {
     const result:CharacterCollider[]=[];
     for(const tile of this.collisionTiles.values()) {
       if(tile.data.x>x+32||tile.data.x+BASE_CHUNK<x-32||tile.data.z>z+32||tile.data.z+BASE_CHUNK<z-32)continue;
-      for(const collider of tile.colliders??[])if(Math.hypot(collider.x-x,collider.z-z)<12+collider.radius)result.push(collider);
+      for(const collider of tile.colliders??[])if(!(collider as CharacterCollider&{solidId?:string}).solidId||!this.buildScene?.edits.get((collider as CharacterCollider&{solidId?:string}).solidId!)?.removed&&!this.buildScene?.editedCollisionReady.has((collider as CharacterCollider&{solidId?:string}).solidId!))if(Math.hypot(collider.x-x,collider.z-z)<12+collider.radius)result.push(collider);
     }
     result.push(...this.buildScene?.colliders(x,z)??[]);
     return result;
   }
   get resources() { return { chunks: this.chunks.size, textures: this.textures.length + this.targets.length + 2+(this.impostors?2:0), instanceBatches: this.viewBatchGroups.reduce((n,m)=>n+m.size,0)+this.shadowBatches.size+this.farBatches.size, drawCalls: this.drawCalls, triangles: this.triangles,
     sceneryInstances:this.visibleBatches.reduce((n,b)=>n+b.count,0),distantTreeInstances:[...this.farBatches.values()].reduce((n,b)=>n+b.count,0),shadowInstances:this.casterBatches.reduce((n,b)=>n+b.count,0),
-    sceneSceneryTriangles:this.visibleBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),shadowSceneryTriangles:this.casterBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),pointLights:this.activePointLights }; }
+    sceneSceneryTriangles:this.visibleBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),shadowSceneryTriangles:this.casterBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),pointLights:this.activePointLights,damagedObjects:this.damaged.size }; }
   get estimatedGpuBytes() {
     const buffers=new Set<GPUBuffer>([this.uniform,this.lightingUniform,this.postUniform,this.farUniform,this.oceanInstance,this.previewInstance,this.previewUniform,...this.materialUniforms].filter(Boolean));
     const add=(mesh?:Mesh)=>{if(mesh){buffers.add(mesh.vertex);buffers.add(mesh.index);}};
-    this.chunks.forEach(c=>{add(c.mesh);add(c.water);buffers.add(c.instance);});this.meshes.forEach(parts=>parts.forEach(add));add(this.waterMesh);
+    this.chunks.forEach(c=>{add(c.mesh);add(c.water);buffers.add(c.instance);});this.meshes.forEach(parts=>parts.forEach(add));this.damaged.forEach(d=>[d.meshes,...d.lods].flat().forEach(add));add(this.waterMesh);
     [...this.viewBatchGroups.flatMap(m=>[...m.values()]),...this.shadowBatches.values(),...this.farBatches.values()].forEach(b=>buffers.add(b.buffer));
     const textures=[...this.textures,...this.targets,this.shadowTexture,this.staticShadowTexture,this.impostors?.texture,this.impostors?.surfaceTexture].filter(Boolean);
     let bytes=[...buffers].reduce((n,b)=>n+b.size,0);
@@ -225,6 +235,11 @@ export class IslandRenderer {
     });
     const sceneryModule=await createModule(sceneryShader,'Compact scenery WGSL');
     this.sceneryPipeline=await this.device.createRenderPipelineAsync({label:'Compact scenery',layout:sceneLayout,vertex:{module:sceneryModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:sceneryModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float'}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil});
+    this.sceneryDepthPipeline=await this.device.createRenderPipelineAsync({label:'Scenery depth coverage',layout:sceneLayout,vertex:{module:sceneryModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:sceneryModule,entryPoint:'depthFragment',targets:[{format:'rgba16float',writeMask:0}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil});
+    this.sceneryEqualPipeline=await this.device.createRenderPipelineAsync({label:'Visible scenery shading',layout:sceneLayout,vertex:{module:sceneryModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:sceneryModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float'}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:{...depthStencil,depthWriteEnabled:false,depthCompare:'equal'}});
+    this.editLayout=this.device.createBindGroupLayout({entries:[{binding:0,visibility:GPUShaderStage.FRAGMENT,buffer:{type:'read-only-storage'}}]});
+    const editModule=await createModule(predictedSceneryShader,'Immediate local destruction WGSL'),editLayout=this.device.createPipelineLayout({bindGroupLayouts:[frameLayout,this.materialLayout,this.editLayout]}),editShadowLayout=this.device.createPipelineLayout({bindGroupLayouts:[frameOnlyLayout,this.materialLayout,this.editLayout]});
+    this.editPipelines={};for(const mode of ['shade','equal','depth','shadow'])this.editPipelines[mode]=await this.device.createRenderPipelineAsync({label:'Predicted solid '+mode,layout:mode==='shadow'?editShadowLayout:editLayout,vertex:{module:editModule,entryPoint:mode==='shadow'?'shadowVertex':'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:editModule,entryPoint:mode==='shadow'?'shadowFragment':mode==='depth'?'depthFragment':'fragmentMain',targets:mode==='shadow'?[]:[{format:'rgba16float',writeMask:mode==='depth'?0:GPUColorWrite.ALL}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:mode==='shadow'?{...depthStencil,depthBias:2,depthBiasSlopeScale:2}:mode==='equal'?{...depthStencil,depthWriteEnabled:false,depthCompare:'equal'}:depthStencil});
     const previewModule=await createModule(buildPreviewShader,'Building preview WGSL');
     const previewLayout=this.device.createBindGroupLayout({entries:[{binding:0,visibility:GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}}]});
     this.previewUniform=this.device.createBuffer({label:'Build preview tint',size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
@@ -283,6 +298,7 @@ export class IslandRenderer {
     for (let i = 0; i < modelNames.length; i += 6) await Promise.all(modelNames.slice(i, i + 6).map(async name => {
       let data=mergeGeometry(await loadGLB(`/models/${name}.glb`));if(name==='campfire-0-lod0')data.push(...campfireFlames());
       this.assertActive();
+      if(/^(oak|birch|palm)-\d+-lod[012]$/.test(name))this.treeGeometry.set(name,data);
       this.meshes.set(name,data.map(data=>this.mesh(data)));this.modelBounds.set(name,modelBounds(data));
     }));
     this.assertActive();
@@ -383,6 +399,7 @@ export class IslandRenderer {
     add('palm-dry-foliage', frond, flat, [0,0,1,1], [2,1,.30,.38], [.85,.65,.38,1]);
     for (let i = 0; i < 4; i++) add(`grass-${i}`, grass, flat, [i, 0, 1, 1], [4, 1, 1.7, .36]);
     add('algae',grass,flat,[0,0,1,1],[4,1,1.1,.36],[.42,.70,.34,1]);
+    add('wood-interior',wood,woodNormal,[0,0,1,1],[1,1,0,0],[1.05,.78,.51,1]);
     add('wall-wood',wood,woodNormal,[0,0,1,1],[1,1,0,0],[.90,.87,.80,1]);
     add('wall-stone',terrain,terrainNormal,[3,0,1,1],[3,1,0,0],[.86,.89,.90,1]);
     add('torch-wood',wood,woodNormal,[0,0,1,1],[1,1,0,0],[.52,.40,.28,1]);
@@ -452,6 +469,31 @@ export class IslandRenderer {
       boundaries,shadowBoundaries:tree?settings.treeLod.slice(settings.shadowLodOffset,2):boundaries,meshes:Array.from({length:tree?3:boundaries.length+1},(_,i)=>this.meshes.get(`${stem}-lod${i}`)!)};
     this.propRenderInfo.set(prop,info);return info;
   }
+  /** Visible local geometry is committed synchronously, before the action is
+   * sent. Baseline skins are clipped only inside these small surface regions. */
+  predictSolid(record:SolidRecord,additional:VolumeRegion[]=[]){
+    const previous=this.damaged.get(record.id);if(!additional.length&&!previous?.prediction)return;
+    const regions=mergeVolumeRegions([...(previous?.prediction?.regions??[]),...additional]),signature=JSON.stringify([record.volume,regions]);if(previous?.prediction?.signature===signature){previous.record=record;return;}
+    const start=performance.now(),base=previous?.prediction?previous.prediction.base:previous;
+    const stages:number[]=[],patchGeometry=regions.flatMap(region=>meshVolumeRegion(record.source,record.volume,region,stages));
+    const meshMs=performance.now()-start;
+    const values=new Float32Array(regions.length*8);regions.forEach((r,i)=>{values.set([...r[0],i===0?regions.length:0,...r[1],0],i*8);});
+    const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Immediate cut regions'),clipGroup=this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]});
+    const intact=this.meshes.get(`${record.prop.kind}${record.prop.aperture?'-'+record.prop.aperture:''}-${record.prop.variant}-lod0`)??[];
+    const skin=(base?.meshes??intact).map(mesh=>({...mesh,borrowed:true,clipGroup:mesh.material.includes('foliage')||mesh.material==='coconut'?undefined:clipGroup}));
+    if(previous?.prediction)this.disposeDamage(previous,false);
+    this.damaged.set(record.id,{record,owns:true,meshes:[...skin,...patchGeometry.map(m=>this.mesh(m))],lods:[],prediction:{base,regions,signature,buffer}});this.damageGeometryRevision++;this.scenerySignature='';
+    const milliseconds=performance.now()-start;this.predictionTimings.push({id:record.id,revision:record.revision,milliseconds,meshMs,uploadMs:milliseconds-meshMs,stages,frame:this.frameNumber});if(this.predictionTimings.length>300)this.predictionTimings.shift();return milliseconds;
+  }
+  private disposeDamage(d:DamageDraw,baseline=true){for(const mesh of [d.meshes,...d.lods].flat()){for(const map of [...this.viewBatchGroups,this.shadowBatches]){map.get(mesh)?.buffer.destroy();map.delete(mesh);}if(d.owns&&!mesh.borrowed){mesh.vertex.destroy();mesh.index.destroy();}}d.prediction?.buffer.destroy();if(baseline&&d.prediction?.base)this.disposeDamage(d.prediction.base);}
+  setDamagedMesh(record:SolidRecord,geometry:VolumeMesh[],geometryLods:VolumeMesh[][]=[]){
+    this.removeDamagedMesh(record.id);const owns=destructionRule(record.prop)?.mode!=='whole';
+    const meshes=owns?[...geometry,...survivingFoliage(record,this.treeGeometry.get(`${record.prop.kind}-${record.prop.variant}-lod0`)??[])].map(g=>this.mesh(g)):this.meshes.get(`${record.prop.kind}-${record.prop.variant}-lod0`)??[];
+    const lods=owns?geometryLods.map((level,i)=>[...level,...survivingFoliage(record,this.treeGeometry.get(`${record.prop.kind}-${record.prop.variant}-lod${Math.min(i+1,2)}`)??[])].map(g=>this.mesh(g))):[];
+    this.damaged.set(record.id,{record,owns,meshes,lods});this.damageGeometryRevision++;this.scenerySignature='';
+  }
+  updateDamagedPose(record:SolidRecord){const d=this.damaged.get(record.id);if(d){d.record=record;this.scenerySignature='';}}
+  removeDamagedMesh(id:string){const d=this.damaged.get(id);if(!d)return;this.disposeDamage(d);this.damaged.delete(id);this.damageGeometryRevision++;this.scenerySignature='';}
   private append(mesh:Mesh,values:Float32Array,shadow=false,distance=Infinity,target?:Map<Mesh,Batch>) {
     const collection=target??(shadow?this.shadowBatches:this.frontToBack&&distance<100?this.nearBatches:this.frontToBack&&distance<250?this.middleBatches:this.batches);
     let batch=collection.get(mesh);
@@ -478,7 +520,7 @@ export class IslandRenderer {
     const waterDepth=Math.max(0,(camera.character.waterLevel??camera.position[1])-camera.position[1]);
     this.uniformValues.set([camera.position[0], camera.position[1], camera.position[2], waterDepth], 48);
     this.write(this.postUniform,new Float32Array([waterDepth,time,daylight.exposure,0]));
-    this.activePointLights=packLighting(this.lightingValues,daylight,camera.position,this.buildScene?.placed.query(camera.position[0],camera.position[2],128)??[],quality.pointLights,time);
+    this.activePointLights=packLighting(this.lightingValues,daylight,camera.position,this.buildScene?[...this.buildScene.placed.query(camera.position[0],camera.position[2],128),...[...this.buildScene.edits.values()].filter(r=>r.fall&&!r.removed&&['torch','torch-wall','campfire'].includes(r.prop.kind)).map(r=>this.buildScene!.solid(r.prop,r.id))]:[],quality.pointLights,time);
     this.write(this.lightingUniform,this.lightingValues);
     this.uniformValues.set([...sun, 1], 52); this.uniformValues.set([time, this.distance, ...this.size], 56);
     this.uniformValues.set([quality.shadowFilter, this.config.islandSizeMeters, 0, 0], 60);
@@ -536,7 +578,7 @@ export class IslandRenderer {
           (x, z) => surfaceFromTiles(tiles, x, z)?.height ?? this.world.height(x, z));
         return { ...prop, y, normal: surface.normal };
       });
-      chunk.colliders=d.level===0?chunk.placedProps.flatMap(prop=>{const collider=playerCollider(prop,this.rockShapes[prop.variant]);return collider?[collider]:[];}):[];
+      chunk.colliders=d.level===0?chunk.placedProps.flatMap(prop=>{const collider=playerCollider(prop,this.rockShapes[prop.variant]);return collider?[Object.assign(collider,{solidId:naturalId(prop)})]:[];}):[];
     }
     if(topologyChanged) {
       this.collisionTiles.clear();
@@ -560,7 +602,8 @@ export class IslandRenderer {
     visible.sort((a,b)=>Math.hypot(a.data.x-camera.position[0],a.data.z-camera.position[2])-Math.hypot(b.data.x-camera.position[0],b.data.z-camera.position[2]));
     this.profiler.endStage('terrainCull',stage);stage=this.profiler.mark();
     const origin=[Math.floor(camera.position[0]/1024)*1024,Math.floor(camera.position[2]/1024)*1024];
-    const farSignature=`${signature}/${origin.join(',')}`;
+    const damageVisibility=[...this.buildScene?.edits.values()??[]].filter(r=>r.removed).map(r=>r.id).sort().join('|')+'/'+[...this.damaged.keys()].sort().join('|');if(damageVisibility!==this.damageVisibility){this.damageVisibility=damageVisibility;this.farChunks=new WeakMap();this.farSignature='';}
+    const farSignature=`${signature}/${origin.join(',')}/${damageVisibility}`;
     if(farSignature!==this.farSignature) {
       this.farSignature=farSignature;this.farOrigin=origin;
       for(const batch of this.farBatches.values())batch.count=0;
@@ -569,7 +612,7 @@ export class IslandRenderer {
         let packed=this.farChunks.get(props);
         if(!packed) {
           packed=new Map();
-          for(const prop of props)if(prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm')for(const mesh of this.meshes.get(`${prop.kind}-${prop.variant}-lod3`)!) {
+          for(const prop of props)if(!this.buildScene?.edits.get(naturalId(prop))?.removed&&!this.damaged.has(naturalId(prop)))if(prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm')for(const mesh of this.meshes.get(`${prop.kind}-${prop.variant}-lod3`)!) {
             let group=packed.get(mesh);if(!group){group={props:[],values:new Float32Array()};packed.set(mesh,group);}group.props.push(prop);
           }
           for(const group of packed.values()) {
@@ -605,7 +648,7 @@ export class IslandRenderer {
     const handoff=quality.treeLod[2];
     this.write(this.farUniform,new Float32Array([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]));
     this.profiler.endStage('distantScenery',stage);stage=this.profiler.mark();
-    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}`;
+    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}`;
     const sceneryChanged=scenerySignature!==this.scenerySignature;
     this.scenerySignature=scenerySignature;
     if(sceneryChanged) {
@@ -621,6 +664,7 @@ export class IslandRenderer {
       if(!sphereInFrustum(viewPlanes,cx,cy,cz,chunkRadius)&&!sphereInFrustum(lightPlanes,cx,cy,cz,chunkRadius))continue;
       if(Math.hypot(Math.max(d.x-camera.position[0],0,camera.position[0]-d.x-e),Math.max(d.z-camera.position[2],0,camera.position[2]-d.z-e))>1000)continue;
       for (const prop of chunk.placedProps ?? []) {
+      if((prop.kind==='rock'||prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm')&&(this.buildScene?.edits.get(naturalId(prop))?.removed||this.damaged.has(naturalId(prop))))continue;
       const distance = Math.hypot(prop.x - camera.position[0], prop.z - camera.position[2]);
       if(distance>1000)continue;
       const info=this.renderInfo(prop,settings),{tree,radius,range,boundaries}=info;
@@ -642,12 +686,14 @@ export class IslandRenderer {
     }
     }
     for(const solid of this.buildScene?.placed.query(camera.position[0],camera.position[2],settings.trees)??[]) {
+      if(this.buildScene?.edits.get(solid.id)?.removed||this.damaged.has(solid.id))continue;
       const prop=solid.prop,distance=Math.hypot(prop.x-camera.position[0],prop.z-camera.position[2]),info=this.renderInfo(prop,settings,true),x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
       const inView=distance<=info.range&&sphereInFrustum(viewPlanes,x,y,z,info.radius),caster=distance<settings.shadowCasterRange+info.radius&&sphereInFrustum(lightPlanes,x,y,z,info.radius);
       if(!inView&&!caster)continue;const values=this.instance(prop,camera);
       if(inView)for(const entry of lodEntries(distance,info.boundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=rangeFade(distance,info.range);for(const mesh of info.meshes[entry.level])this.append(mesh,values,false,distance);}
       if(caster)for(const entry of lodEntries(distance,info.shadowBoundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=1;for(const mesh of info.meshes[entry.level+(info.tree?settings.shadowLodOffset:0)])this.append(mesh,values,true);}
     }
+    for(const {record,meshes,lods}of this.damaged.values()){if(record.removed)continue;const p=record.pose?.position??[record.prop.x,record.prop.y,record.prop.z],distance=Math.hypot(p[0]-camera.position[0],p[2]-camera.position[2]);if(distance>settings.trees)continue;const bounds=record.fragmentBounds??record.source.bounds,center=worldPoint(record,bounds[0].map((v,k)=>(v+bounds[1][k])/2)as [number,number,number]),radius=Math.hypot(...bounds[1].map((v,k)=>(v-bounds[0][k])/2))*record.prop.scale+3,inView=sphereInFrustum(viewPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius),caster=distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius);if(!inView&&!caster)continue;const q=quaternion(record),values=new Float32Array([p[0]-camera.position[0],p[1]-camera.position[1],p[2]-camera.position[2],record.prop.scale,...q,1,0,rangeFade(distance,settings.trees)]);const levels=[meshes,...lods],entries=lodEntries(distance,lods.length?settings.treeLod.slice(0,lods.length):[]);for(const entry of entries){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;for(const mesh of levels[entry.level]){if(inView)this.append(mesh,values,false,distance);if(caster)this.append(mesh,values,true);}}}
     this.visibleBatches=this.viewBatchGroups.flatMap(m=>[...m.values()].filter(b=>b.count).sort((a,b)=>this.frontToBack?a.nearest-b.nearest:0));
     this.casterBatches=[...this.shadowBatches.values()].filter(b=>b.count);
     }
@@ -655,9 +701,11 @@ export class IslandRenderer {
     if(sceneryChanged)for (const batch of [...this.visibleBatches,...this.casterBatches])this.write(batch.buffer,batch.instances.subarray(0,batch.count*11));
     this.profiler.endStage('instanceUpload',stage);stage=this.profiler.mark();
     const encoder = this.device.createCommandEncoder();this.gpuProfiler?.begin(this.frameNumber);
-    const draw = (pass: GPURenderPassEncoder, mesh: Mesh, instances: GPUBuffer, count = 1) => {
+    const draw = (pass: GPURenderPassEncoder, mesh: Mesh, instances: GPUBuffer, count = 1,mode?:'shade'|'equal'|'depth'|'shadow') => {
       const material = this.materials.get(mesh.material); if (!material) throw new Error(`Unknown model material ${mesh.material}`);
+      if(mesh.clipGroup&&mode){pass.setPipeline(this.editPipelines[mode]);pass.setBindGroup(2,mesh.clipGroup);}
       pass.setBindGroup(1, material); pass.setVertexBuffer(0, mesh.vertex); pass.setVertexBuffer(1, instances); pass.setIndexBuffer(mesh.index, mesh.indexFormat); pass.drawIndexed(mesh.count, count);
+      if(mesh.clipGroup&&mode)pass.setPipeline(mode==='shadow'?this.sceneryShadowPipeline:mode==='depth'?this.sceneryDepthPipeline:mode==='equal'?this.sceneryEqualPipeline:this.sceneryPipeline);
       this.drawCalls++; this.triangles += mesh.count / 3 * count;
     };
     const staticChanged=!this.cacheStaticShadows||scenerySignature!==this.staticShadowSignature;
@@ -669,7 +717,7 @@ export class IslandRenderer {
         pass.setPipeline(this.shadowPipeline);pass.setBindGroup(0,this.frameOnly);
         for(const chunk of shadowChunks)draw(pass,chunk.mesh,chunk.instance);
         pass.setPipeline(this.sceneryShadowPipeline);
-        for(const batch of this.casterBatches)if(staticCaster(batch))draw(pass,batch.mesh,batch.buffer,batch.count);
+        for(const batch of this.casterBatches)if(staticCaster(batch))draw(pass,batch.mesh,batch.buffer,batch.count,'shadow');
       }
       pass.end();
     }
@@ -677,7 +725,7 @@ export class IslandRenderer {
     const shadow = encoder.beginRenderPass({ label: 'Moving sun casters', timestampWrites:this.gpuProfiler?.pass(1),colorAttachments: [], depthStencilAttachment: { view: this.shadowTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'store' } });
     shadow.setPipeline(this.shadowPipeline); shadow.setBindGroup(0, this.frameOnly);
     shadow.setPipeline(this.sceneryShadowPipeline);
-    for (const batch of this.casterBatches)if(!staticCaster(batch))draw(shadow, batch.mesh, batch.buffer, batch.count);
+    for (const batch of this.casterBatches)if(!staticCaster(batch))draw(shadow, batch.mesh, batch.buffer, batch.count,'shadow');
     shadow.end();
     let opaque = encoder.beginRenderPass({ label: 'Terrain, vegetation and sky', timestampWrites:this.gpuProfiler?.pass(2),colorAttachments: [{ view: this.opaque.createView(), clearValue: { r: .5, g: .7, b: .8, a: 1 }, loadOp: 'clear', storeOp: 'store' }], depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' } });
     opaque.setPipeline(this.scenePipeline); opaque.setBindGroup(0, this.frameGroup);
@@ -687,11 +735,16 @@ export class IslandRenderer {
       opaque.end();opaque=encoder.beginRenderPass({label:'Profile scenery and sky',timestampWrites:this.gpuProfiler?.pass(3),colorAttachments:[{view:this.opaque.createView(),loadOp:'load',storeOp:'store'}],depthStencilAttachment:{view:this.depth.createView(),depthLoadOp:'load',depthStoreOp:'store'}});
       opaque.setBindGroup(0,this.frameGroup);
     }
-    opaque.setPipeline(this.sceneryPipeline);
-    for (const batch of this.visibleBatches) if(!batch.mesh.material.endsWith('lod3'))draw(opaque, batch.mesh, batch.buffer, batch.count);
+    if(this.depthPrepass){
+      opaque.setPipeline(this.sceneryDepthPipeline);
+      for(const batch of this.visibleBatches)if(batch.mesh.material!=='torch-flame'&&!batch.mesh.material.endsWith('lod3'))draw(opaque,batch.mesh,batch.buffer,batch.count,'depth');
+    }
+    opaque.setPipeline(this.depthPrepass?this.sceneryEqualPipeline:this.sceneryPipeline);
+    for(const batch of this.visibleBatches)if(batch.mesh.material!=='torch-flame'&&!batch.mesh.material.endsWith('lod3'))draw(opaque,batch.mesh,batch.buffer,batch.count,this.depthPrepass?'equal':'shade');
+    opaque.setPipeline(this.sceneryPipeline);for(const batch of this.visibleBatches)if(batch.mesh.material==='torch-flame')draw(opaque,batch.mesh,batch.buffer,batch.count,this.depthPrepass?'equal':'shade');
     opaque.setPipeline(this.impostorPipeline);opaque.setBindGroup(0,this.frameGroup);
     opaque.setBindGroup(2,this.farGroup);
-    for(const batch of this.farBatches.values())if(batch.count)draw(opaque,batch.mesh,batch.buffer,batch.count);
+    for(const batch of this.farBatches.values())if(batch.count)draw(opaque,batch.mesh,batch.buffer,batch.count,this.depthPrepass?'equal':'shade');
     opaque.setPipeline(this.skyPipeline); opaque.setBindGroup(0, this.frameOnly); opaque.draw(3);
     opaque.end();
     encoder.copyTextureToTexture({ texture: this.opaque }, { texture: this.composite }, { width: this.size[0], height: this.size[1] });
@@ -721,6 +774,7 @@ export class IslandRenderer {
     this.gpuProfiler?.dispose();
     this.impostors?.dispose();
     this.collisionTiles.clear();
+    for(const id of this.damaged.keys())this.removeDamagedMesh(id);this.treeGeometry.clear();
     this.chunks.forEach(c => this.destroyChunk(c)); this.chunks.clear();
     this.meshes.forEach(parts => parts.forEach(m => { m.vertex.destroy(); m.index.destroy(); }));
     if (this.waterMesh) { this.waterMesh.vertex.destroy(); this.waterMesh.index.destroy(); }

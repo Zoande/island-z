@@ -38,7 +38,7 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
       // A mounting plate must land on wall material, rather than bridging a hole.
       if(anchor.prop.aperture){const o=OPENINGS[anchor.prop.aperture];if(Math.abs(localX)<o.width/2+.15&&object.position[1]<parent.position[1]+o.bottom+o.height&&object.position[1]+.84>parent.position[1]+o.bottom)return fail('support','Mount the torch beside the opening');}
     }else{
-      if(anchor.prop.aperture)return fail('opening','This wall already has a door or window');
+      if(scene.placed.query(parent.position[0],parent.position[2],3).some(s=>s.object?.support.kind==='wall'&&s.object.support.id===parent.id&&['door','window'].includes(objectDefinition(s.object.definitionId).attachment??'')))return fail('opening','This wall already has a door or window');if(anchor.prop.aperture&&anchor.prop.aperture!==d.attachment)return fail('opening','Use the matching attachment for this opening, or repair it first');
       const o=OPENINGS[d.attachment];object.position=[parent.position[0],parent.position[1]+o.bottom,parent.position[2]];if(d.attachment==='door')object.state={open:false};
       // Cutting is derived from the child object. Removing a rejected optimistic
       // attachment restores the solid wall without an extra network mutation.

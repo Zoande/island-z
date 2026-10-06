@@ -36,14 +36,18 @@ fn skyColor(dir: vec3f) -> vec3f {
   let towardSun = max(dot(dir, lighting.sunDirection.xyz), 0.0);
   color += lighting.sunColor.rgb * pow(towardSun, 14.0) * (.14+lighting.ambientGround.w*.30) * lighting.sunDirection.w/3.5;
   color += lighting.sunColor.rgb * 8.0 * smoothstep(0.99975, 0.99994, towardSun) * smoothstep(-.04,.03,lighting.sunDirection.y);
-  let towardMoon=max(dot(dir,lighting.moonDirection.xyz),0.0);
-  let moon=smoothstep(.99972,.99986,towardMoon);
-  let craters=.80+.20*worldNoise(dir.xz*1800.0+vec2f(dir.y*700.0),171u);
-  color+=lighting.moonColor.rgb*(moon*craters*1.8+pow(towardMoon,48.0)*.018)*lighting.zenith.w;
-  let sphere=vec2f(atan2(dir.z,dir.x)/6.2831853+.5,acos(clamp(dir.y,-1.0,1.0))/3.1415927)*vec2f(1200.0,600.0);
-  let cell=vec2i(floor(sphere));let starSeed=worldHash(cell,9187u);
-  let star=pow(max(0.0,1.0-length(fract(sphere)-vec2f(.5))/.28),2.0)*step(.9975,starSeed)*lighting.zenith.w*smoothstep(.03,.30,dir.y);
-  color+=mix(vec3f(.66,.79,1.0),vec3f(1.0,.85,.65),worldHash(cell,713u))*star*1.4;
+  // Night-only terms are exactly zero in daytime. Avoid their trigonometry
+  // and noise on every terrain/leaf fragment when stars and moon are invisible.
+  if(lighting.zenith.w>0.0){
+    let towardMoon=max(dot(dir,lighting.moonDirection.xyz),0.0);
+    let moon=smoothstep(.99972,.99986,towardMoon);
+    if(moon>0.0){let craters=.80+.20*worldNoise(dir.xz*1800.0+vec2f(dir.y*700.0),171u);color+=lighting.moonColor.rgb*moon*craters*1.8*lighting.zenith.w;}
+    color+=lighting.moonColor.rgb*pow(towardMoon,48.0)*.018*lighting.zenith.w;
+    let sphere=vec2f(atan2(dir.z,dir.x)/6.2831853+.5,acos(clamp(dir.y,-1.0,1.0))/3.1415927)*vec2f(1200.0,600.0);
+    let cell=vec2i(floor(sphere));let starSeed=worldHash(cell,9187u);
+    let star=pow(max(0.0,1.0-length(fract(sphere)-vec2f(.5))/.28),2.0)*step(.9975,starSeed)*lighting.zenith.w*smoothstep(.03,.30,dir.y);
+    color+=mix(vec3f(.66,.79,1.0),vec3f(1.0,.85,.65),worldHash(cell,713u))*star*1.4;
+  }
   // Broad, subtle wisps rather than a baked sky photograph.
   let p = dir.xz / max(dir.y + 0.12, 0.1);
   let wisps = sin(p.x * 1.2 + sin(p.y * 1.6)) * sin(p.y * 2.4 + p.x * 0.25);
@@ -157,6 +161,11 @@ fn transform(v: Vertex) -> Interpolated {
   let texel = textureSampleLevel(albedo, materialSampler, v.uv, i32(material.tile.x), 0.0);
   if (texel.a < material.flags.w) { discard; }
 }
+@fragment fn depthFragment(v: Interpolated) {
+  let dx=dpdx(v.uv);let dy=dpdy(v.uv);
+  if(!lodVisible(v.clip.xy,v.fade)){discard;}
+  if(material.flags.w>0.0){let texel=textureSampleGrad(albedo,materialSampler,v.uv,i32(material.tile.x),dx,dy);if(texel.a<material.flags.w){discard;}}
+}
 fn shadow(position: vec3f, normal: vec3f) -> f32 {
   if (frame.settings.x < 0.5) { return 1.0; }
   let projected = frame.light * vec4f(position + normal * 0.18, 1.0);
@@ -212,16 +221,16 @@ fn pbr(base: vec3f, roughness: f32, n: vec3f, position: vec3f, visibility: f32, 
       if (weight < 0.003) { continue; }
       var scale = select(0.125, 0.0625, i == 3u);
       if (i == 5u) { scale = 0.65; }
-      var a: vec4f; var b: vec4f; var c: vec4f; var nr: vec4f;
+      var a=vec4f(0.0); var b=vec4f(0.0); var c=vec4f(0.0); var nr: vec4f;
       if (i < 4u) {
-        a = textureSampleGrad(albedo, materialSampler, v.world.zy * scale, i32(i), dx.zy * scale, dy.zy * scale);
-        b = textureSampleGrad(albedo, materialSampler, v.world.xz * scale, i32(i), dx.xz * scale, dy.xz * scale);
-        c = textureSampleGrad(albedo, materialSampler, v.world.xy * scale, i32(i), dx.xy * scale, dy.xy * scale);
+        if(axes.x>0.00001){a = textureSampleGrad(albedo, materialSampler, v.world.zy * scale, i32(i), dx.zy * scale, dy.zy * scale);}
+        if(axes.y>0.00001){b = textureSampleGrad(albedo, materialSampler, v.world.xz * scale, i32(i), dx.xz * scale, dy.xz * scale);}
+        if(axes.z>0.00001){c = textureSampleGrad(albedo, materialSampler, v.world.xy * scale, i32(i), dx.xy * scale, dy.xy * scale);}
         nr = textureSampleGrad(normalRoughness, materialSampler, v.world.xz * scale, i32(i), dx.xz * scale, dy.xz * scale);
       } else {
-        a = textureSampleGrad(groundAlbedo, materialSampler, v.world.zy * scale, i32(i - 4u), dx.zy * scale, dy.zy * scale);
-        b = textureSampleGrad(groundAlbedo, materialSampler, v.world.xz * scale, i32(i - 4u), dx.xz * scale, dy.xz * scale);
-        c = textureSampleGrad(groundAlbedo, materialSampler, v.world.xy * scale, i32(i - 4u), dx.xy * scale, dy.xy * scale);
+        if(axes.x>0.00001){a = textureSampleGrad(groundAlbedo, materialSampler, v.world.zy * scale, i32(i - 4u), dx.zy * scale, dy.zy * scale);}
+        if(axes.y>0.00001){b = textureSampleGrad(groundAlbedo, materialSampler, v.world.xz * scale, i32(i - 4u), dx.xz * scale, dy.xz * scale);}
+        if(axes.z>0.00001){c = textureSampleGrad(groundAlbedo, materialSampler, v.world.xy * scale, i32(i - 4u), dx.xy * scale, dy.xy * scale);}
         nr = textureSampleGrad(groundNormal, materialSampler, v.world.xz * scale, i32(i - 4u), dx.xz * scale, dy.xz * scale);
       }
       base += (a * axes.x + b * axes.y + c * axes.z) * weight;
@@ -266,6 +275,17 @@ export const sceneryShader=makeSceneShader(true);
 export const buildPreviewShader=sceneryShader.replace('struct Material {', '@group(2) @binding(0) var<uniform> previewColor:vec4f;\nstruct Material {')
   .replace('return vec4f(fog(light, v.position), 1.0);',`let rim=pow(1.0-abs(dot(normal,normalize(-v.position))),2.0);
   return vec4f(previewColor.rgb*(.65+rim*1.6),.22+rim*.28);`);
+/** Only provisional skins use this pipeline; ordinary scenery pays no extra
+ * fragment work. Replacement regions are object-local, including rotated rocks. */
+export const predictedSceneryShader=sceneryShader
+  .replace('@location(6) @interpolate(flat) fade: vec3f,','@location(6) @interpolate(flat) fade: vec3f, @location(7) localPosition:vec3f,')
+  .replace('out.position = p + anchor;','out.localPosition=v.position; out.position = p + anchor;')
+  .replace('@fragment fn shadowFragment(v: Interpolated) {','@fragment fn shadowFragment(v: Interpolated) { if(replacedSkin(v.localPosition)){discard;}')
+  .replace('@fragment fn depthFragment(v: Interpolated) {','@fragment fn depthFragment(v: Interpolated) { if(replacedSkin(v.localPosition)){discard;}')
+  .replace('@fragment fn fragmentMain(v: Interpolated, @builtin(front_facing) front: bool) -> @location(0) vec4f {','@fragment fn fragmentMain(v: Interpolated, @builtin(front_facing) front: bool) -> @location(0) vec4f { if(replacedSkin(v.localPosition)){discard;}')+`
+@group(2) @binding(0) var<storage,read> replacementRegions:array<vec4f>;
+fn replacedSkin(p:vec3f)->bool {for(var i=0u;i<u32(replacementRegions[0].w);i++){if(all(p>=replacementRegions[i*2u].xyz)&&all(p<=replacementRegions[i*2u+1u].xyz)){return true;}}return false;}
+`;
 export const lightingFunctions=sceneryShader.slice(sceneryShader.indexOf('fn shadow(position'),sceneryShader.indexOf('@fragment fn fragmentMain'));
 export const octahedral=/*wgsl*/`
 fn octEncode(n:vec3f)->vec2f {

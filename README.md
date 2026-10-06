@@ -78,7 +78,7 @@ the selected group. Reselecting a slot preserves its current choice.
 | 9 | Empty hands; hide the preview |
 
 Mouse wheel rotates precisely (one
-degree per typical wheel notch); **R** turns 90 degrees; **left click** places.
+degree per typical wheel notch); **T** turns 90 degrees; **left click** places.
 The first click on an unlocked landscape captures the mouse.
 
 Aim at a visible surface within ten meters while standing on solid ground.
@@ -89,7 +89,7 @@ Some canopy overlap is allowed. Trees stay upright; rocks follow and embed into
 the terrain. Severe terrain irregularities are rejected.
 
 Walls are 3 m wide and 2.5 m tall, with 22 cm wood and 32 cm stone thickness.
-Endpoints snap within 80 cm: wheel/R rotation pivots around the fixed joint,
+Endpoints snap within 80 cm: wheel/T rotation pivots around the fixed joint,
 including corners and mixed materials. Aim at an upper wall face to stack;
 stacked walls keep the position and rotation of the wall below. Rock support
 requires the entire wall footprint to fit a broad, level top. Walls cannot be
@@ -102,7 +102,7 @@ Excavation is non-cumulative; unsupported gaps and substantial excavation are
 rejected. Grass and decorative pebbles under a floor are suppressed. Walls snap
 to floor edges. Roofs require a wall or another roof edge; they cannot be placed
 freely over the ground. Rotation follows structural supports to keep seams aligned. Roofs default over the
-supporting floor; R switches which side of a wall they cover.
+supporting floor; T switches which side of a wall they cover.
 
 Placing a door or window automatically cuts an opening in an existing wall.
 One opening fits each wall; its frame, ray casts, movement collision and torch
@@ -404,3 +404,12 @@ The GPU check compiles the actual WGSL/pipelines on the local graphics adapter
 and compares GPU ocean masking with CPU coastline samples;
 it complements browser testing. `scripts/preview_assets.py` renders an inspection
 sheet from Blender sources into `artifacts/vegetation-inspection.png`.
+
+## Destruction and repair
+
+Hold right-click to cut wood, rocks, walls, floors, and roofs within 4 m. Small
+buildables dismantle once per press. Hold R to repair surviving structural
+builds; T rotates the building preview. Real holes affect collision and shadows.
+Cuts, removals, floor grading, openings, and fallen tree pieces are saved.
+See [destruction foundations and checks](docs/destruction.md) for architecture,
+controls, preparation assets, synchronization, and diagnostics.

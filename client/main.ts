@@ -30,7 +30,7 @@ app.innerHTML=`
   <div class="caption"><div id="biome" class="biome">Coastal grassland</div></div>
   <div class="vitals" aria-label="Player vitals"><div class="vital-label"><span>Oxygen</span><span id="oxygen-time">60s</span></div><div id="oxygen" class="oxygen" role="progressbar" aria-label="Oxygen" aria-valuemin="0" aria-valuemax="60">${Array.from({length:6},()=>'<i class="bubble"></i>').join('')}</div><div class="vital-label"><span>Stamina</span><span id="stamina-state"></span></div><div id="stamina" class="stamina" role="progressbar" aria-label="Stamina" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
   <div id="respawn-note" class="respawn-note" role="status"></div>
-  <div class="building-hud"><div id="build-hint" class="build-hint" role="status"></div><div id="build-controls" class="build-controls" hidden>Left click place · Wheel fine rotate · R turn 90°</div><nav id="hotbar" class="hotbar" aria-label="Building hotbar"></nav></div>
+  <div class="building-hud"><div id="build-hint" class="build-hint" role="status"></div><div id="build-controls" class="build-controls" hidden>Left click place · Wheel fine rotate · T turn 90°</div><nav id="hotbar" class="hotbar" aria-label="Building hotbar"></nav></div>
   <div class="play-hint">Click the landscape to explore</div><div class="reticle"></div>
   <div class="overlay" id="overlay"><div class="eyebrow">A world from a seed</div><h1 id="overlay-title">Finding the island</h1><p id="message">Connecting to the world server…</p><div class="loading-line" id="loading-line"></div><button id="retry" hidden>Retry</button></div>`;
 const get=(id:string)=>document.getElementById(id)!;
@@ -72,7 +72,7 @@ async function start() {
     renderer=new IslandRenderer(canvas,config,world);renderer.onFatal=fail;
     const r=renderer;
     if(new URLSearchParams(location.search).has('profile'))r.profiler.start();
-    camera=new PlayerCamera(canvas,{surface:(x,z)=>r.collisionSurface(x,z),colliders:(x,z)=>r.playerColliders(x,z),water:(x,z)=>world.surfaceWater(x,z,performance.now()/1000)});
+    camera=new PlayerCamera(canvas,{surface:(x,z)=>r.collisionSurface(x,z),colliders:(x,z)=>r.playerColliders(x,z),water:(x,z)=>world.surfaceWater(x,z,performance.now()/1000),solidMovement:(...args)=>building?.destruction.movement(...args)??null});
     // Start at a dry, gentle coast, with room around nearby trunks and shrubs.
     const spawnX=config.islandSizeMeters*.08;
     let inner=0,outer=config.islandSizeMeters*.5;

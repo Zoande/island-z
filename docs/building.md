@@ -125,7 +125,7 @@ to a per-world JSONL journal. It flushes the journal before success, then update
 memory. Startup reconstructs objects, connections, revisions and retry receipts.
 An interrupted final line is preserved separately and removed from the journal;
 corrupt completed records fail loading instead of silently discarding builds.
-Files are namespaced by seed, size and generator version. No removal API exists.
+Files are namespaced by seed, size and generator version. The destruction action endpoint removes builds and retains independent openings and floor grading; see [destruction](destruction.md).
 
 Rendering reuses static meshes, named materials, instance batches, LOD fading,
 frustum culling and shadow caches. Placed trees retain distant low-detail geometry
