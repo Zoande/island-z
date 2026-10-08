@@ -10,7 +10,7 @@ import type {CollisionBox} from './volume-collision';
 export class SimulationEnvironment implements CharacterEnvironment {
  private physics?:SolidPhysics;private origin='';private feet?:Point3;private collidersById=new Map<string,{record:SolidRecord;boxes:CollisionBox[]}>();private spatial=new SpatialIndex<{record:SolidRecord;boxes:CollisionBox[]}>();
  constructor(readonly scene:BuildScene,readonly self:string,readonly players:()=>Iterable<{id:string;feet:ArrayLike<number>}>,readonly clock:()=>number){}
- surface(x:number,z:number){return this.scene.terrain(x,z);}
+ surface(x:number,z:number,feetY?:number){return this.scene.groundSurface(x,z,feetY);}
  colliders(x:number,z:number){return [...this.scene.nearby(x,z,12).filter(s=>!this.scene.edits.get(s.id)?.removed&&!this.collidersById.has(s.id)).flatMap(s=>s.colliders),...playerContacts(this.players(),this.self)];}
  water(x:number,z:number){return this.scene.world.surfaceWater(x,z,this.clock());}
  install(record:SolidRecord,boxes:CollisionBox[]){if(record.removed){this.remove(record.id);return;}this.collidersById.set(record.id,{record,boxes});const p=record.pose?.position??[record.prop.x,record.prop.y,record.prop.z],radius=Math.hypot(...record.source.bounds[1].map((v,k)=>(v-record.source.bounds[0][k])/2))*record.prop.scale;this.spatial.insert(record.id,{record,boxes},p[0],p[2],radius);this.scene.setDamageCollision(record,boxes);if(this.physics&&this.feet&&Math.hypot(p[0]-this.feet[0],p[2]-this.feet[2])<110+radius)this.physics.add(record,boxes,undefined,false);}

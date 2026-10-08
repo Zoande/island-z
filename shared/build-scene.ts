@@ -12,12 +12,14 @@ import {boxColliders} from './build-parts';
 import type {CollisionBox} from './volume-collision';
 import {worldPoint,quaternion} from './destruction';
 import {naturalId,volumeRay,recordFor,treeSolidAssets,isTree,type SolidRecord,destructionRule} from './destruction';
+import {SparseVolume} from './volume';
+import {terrainId,terrainRecord} from './terrain-volume';
 export interface BuildSolid {id:string;prop:Prop;collider:CharacterCollider;shape:ConvexShape;colliders:CharacterCollider[];shapes:ConvexShape[];object?:BuildObject;record?:SolidRecord}
 export interface BuildHit {point:Point3;distance:number;solid?:BuildSolid}
 /** A renderer-independent canonical 2m terrain surface and bounded scenery cache.
  * Both previews and authoritative validation sample the same triangles. */
 export class BuildScene {
-  readonly placed=new SpatialIndex<BuildSolid>();revision=0;terrainRevision=0;
+  readonly placed=new SpatialIndex<BuildSolid>();revision=0;terrainRevision=0;miningRevision=0;
   readonly damageCollision=new Map<string,{revision:number;shapes:ConvexShape[];colliders:CharacterCollider[]}>();
   readonly edits=new Map<string,SolidRecord>();readonly editedCollisionReady=new Set<string>();readonly openings=new Map<string,'door'|'window'|null>();
   readonly leveling=new Map<string,BuildObject>();private permanentFloors=new SpatialIndex<BuildObject>();
@@ -25,6 +27,24 @@ export class BuildScene {
   readonly rocks:Point3[][];
   private solidSources=new WeakMap<BuildSolid,SolidRecord>();private natural=new Map<string,BuildSolid[]>();private heights=new Map<string,number>();
   constructor(readonly world:WorldGenerator){this.rocks=Array.from({length:12},(_,i)=>rockPoints(world.config.seed,i));}
+  private terrainVolumes=new WeakMap<SolidRecord,SparseVolume>();
+  terrainRecord(point:Point3):SolidRecord {return this.edits.get(terrainId(point))??terrainRecord(point,(x,z)=>this.terrain(x,z),(x,z)=>this.world.sample(x,z).weights);}
+  groundDistance(point:Point3):number {
+    const record=this.edits.get(terrainId(point));if(record){let volume=this.terrainVolumes.get(record);if(!volume){volume=new SparseVolume(record.source,record.volume,true);this.terrainVolumes.set(record,volume);}return volume.distance([point[0]-record.prop.x,point[1]-record.prop.y,point[2]-record.prop.z]);}
+    const surface=this.terrain(point[0],point[2]);return (point[1]-surface.height)*surface.normal[1];
+  }
+  /** Select the floor below the actor, retaining ceilings and higher surfaces
+   * as solids rather than snapping an underground player onto the hillside. */
+  groundSurface(x:number,z:number,feetY=Infinity):MeshSurface {
+    const original=this.terrain(x,z),start=Math.min(original.height+.05,feetY+.28);
+    if(!this.edits.has(terrainId([x,Math.min(start,original.height-.001),z]))&&!this.edits.has(terrainId([x,original.height-.001,z])))return original;
+    let previous=start;
+    for(let y=start,n=0;n<20000;n++){
+      const d=this.groundDistance([x,y,z]);if(d<=0){let low=y,high=previous;for(let i=0;i<12;i++){const mid=(low+high)/2;if(this.groundDistance([x,mid,z])>0)high=mid;else low=mid;}const height=(low+high)/2,h=.025,normal:Point3=[this.groundDistance([x+h,height,z])-this.groundDistance([x-h,height,z]),this.groundDistance([x,height+h,z])-this.groundDistance([x,height-h,z]),this.groundDistance([x,height,z+h])-this.groundDistance([x,height,z-h])],length=Math.hypot(...normal)||1;return {height,normal:normal.map(v=>v/length)as Point3};}
+      previous=y;y-=Math.max(.0125,Math.min(.2,d*.75));
+    }
+    return original;
+  }
   terrain(x:number,z:number):MeshSurface {
     const cx=Math.floor(x/2)*2,cz=Math.floor(z/2)*2,u=(x-cx)/2,v=(z-cz)/2;
     const height=(x:number,z:number)=>{const key=`${x}:${z}`;let value=this.heights.get(key);if(value===undefined){value=this.world.height(x,z);this.heights.set(key,value);if(this.heights.size>32768)this.heights.delete(this.heights.keys().next().value!);}return value;};
@@ -38,6 +58,8 @@ export class BuildScene {
   grade(x:number,z:number,original:number):number {
     let result=original;
     for(const floor of [...this.floors.query(x,z,0),...this.permanentFloors.query(x,z,0)]){
+      // Underground floors support a cave interior; they must not grade its roof.
+      if(original-floor.position[1]>.45)continue;
       const slab=objectDefinition(floor.definitionId).slab!,dx=x-floor.position[0],dz=z-floor.position[2],c=Math.cos(floor.rotation),s=Math.sin(floor.rotation);
       const distance=Math.hypot(Math.max(0,Math.abs(dx*c-dz*s)-slab.width/2),Math.max(0,Math.abs(dx*s+dz*c)-slab.depth/2));
       if(distance>=4)continue;
@@ -87,12 +109,12 @@ export class BuildScene {
   keepLeveling(object:BuildObject){if(JSON.stringify(this.leveling.get(object.id))===JSON.stringify(object))return;this.leveling.set(object.id,object);this.permanentFloors.insert(object.id,object,object.position[0],object.position[2],7);this.terrainRevision++;this.natural.clear();}
   forgetLeveling(id:string){if(this.leveling.delete(id)){this.permanentFloors.remove(id);this.terrainRevision++;}}
   setDamageCollision(record:SolidRecord,boxes:CollisionBox[]){const shapes:ConvexShape[]=[],colliders:CharacterCollider[]=[];for(const box of boxes){const points=[0,1,2,3,4,5,6,7].map(n=>worldPoint(record,box.center.map((v,k)=>v+box.half[k]*(n&(1<<k)?1:-1))as Point3)),center=worldPoint(record,box.center);shapes.push({kind:'hull',points,center});const q=quaternion(record),upright=Math.abs(q[0])+Math.abs(q[2])<.001;if(upright)colliders.push({kind:'wall',x:center[0],z:center[2],bottom:center[1]-box.half[1]*record.prop.scale,top:center[1]+box.half[1]*record.prop.scale,radius:Math.hypot(box.half[0],box.half[2])*record.prop.scale,wall:{halfWidth:box.half[0]*record.prop.scale,halfDepth:box.half[2]*record.prop.scale,yaw:2*Math.atan2(q[1],q[3])}});}this.damageCollision.set(record.id,{revision:record.revision,shapes,colliders});const placed=this.placed.get(record.id);if(placed){placed.shapes=shapes;placed.colliders=colliders;}this.revision++;}
-  applyRecord(record:SolidRecord){this.edits.set(record.id,record);if(record.removed)this.remove(record.id,true);else{const solid=this.placed.get(record.id);if(solid)solid.record=record;}this.revision++;}
+  applyRecord(record:SolidRecord){const old=this.edits.get(record.id);this.edits.set(record.id,record);if(record.prop.kind==='terrain'&&old!==record){this.miningRevision++;this.terrainRevision++;}if(record.removed)this.remove(record.id,true);else{const solid=this.placed.get(record.id);if(solid)solid.record=record;}this.revision++;}
   setOpening(id:string,kind:'door'|'window'|null){if(this.openings.get(id)===kind)return;this.openings.set(id,kind);this.refreshWall(id);this.revision++;}
   destructible(id:string):BuildSolid|undefined{const placed=this.placed.get(id);if(placed)return placed;const record=this.edits.get(id);if(record&&!record.removed)return this.solid(record.prop,id,record.object);return;}
   colliders(x:number,z:number,radius=12):CharacterCollider[]{return this.placed.query(x,z,radius).filter(s=>!this.edits.get(s.id)?.removed&&!this.editedCollisionReady.has(s.id)).flatMap(s=>s.colliders);}
   standingHeight(x:number,z:number,feetY=Infinity):number {
-    let height=this.terrain(x,z).height;
+    let height=this.groundSurface(x,z,feetY).height;
     for(const solid of this.nearby(x,z,1)) {
       if(solid.record){const start=Math.min(Number.isFinite(feetY)?feetY+.5:solid.collider.top+.5,solid.collider.top+.5),hit=volumeRay(solid.record,[x,start,z],[0,-1,0],Math.max(0,start-height));if(hit)height=Math.max(height,hit.point[1]);continue;}
       for(const c of solid.colliders){
@@ -107,10 +129,13 @@ export class BuildScene {
       let record=this.edits.get(solid.id);if(record?.removed)continue;if(!record&&volumetric&&destructionRule(solid.prop)?.mode==='voxel'){record=this.solidSources.get(solid);if(!record){record=recordFor(solid.id,solid.prop,this.rocks,solid.object);this.solidSources.set(solid,record);}}const hit=record?volumeRay(record,eye,direction,limit,repair&&!!solid.object&&!!destructionRule(record.prop)?.repairable)?.distance??null:solidRay(solid,eye,direction,limit);if(hit!==null&&hit<distance){distance=hit;closest={...solid,record};}
     }
     for(const record of this.edits.values())if(record.fragmentOf&&!record.removed){const hit=volumeRay(record,eye,direction,limit);if(hit&&hit.distance<distance){distance=hit.distance;closest={...this.solid(record.prop,record.id),record};}}
-    const terrainDistance=(t:number)=>eye[1]+direction[1]*t-this.terrain(eye[0]+direction[0]*t,eye[2]+direction[2]*t).height;
+    const terrainDistance=(t:number)=>this.groundDistance([eye[0]+direction[0]*t,eye[1]+direction[1]*t,eye[2]+direction[2]*t]);
     let previous=0;
-    for(let t=0;t<=Math.min(limit,distance)+.0001;t+=.20) {
-      if(terrainDistance(t)<=0){let low=previous,high=t;for(let i=0;i<16;i++){const mid=(low+high)/2;if(terrainDistance(mid)>0)low=mid;else high=mid;}distance=(low+high)/2;closest=undefined;break;}previous=t;
+    for(let t=0;t<=Math.min(limit,distance)+.0001;) {
+      const d=terrainDistance(t);
+      if(d<=0){let low=previous,high=t;for(let i=0;i<16;i++){const mid=(low+high)/2;if(terrainDistance(mid)>0)low=mid;else high=mid;}distance=(low+high)/2;closest=undefined;
+        if(volumetric&&!repair){const point=eye.map((v,k)=>v+direction[k]*Math.min(limit,distance+.002))as Point3,record=this.terrainRecord(point),p=record.prop,shape=boxShape([p.x+.5,p.y+.5,p.z+.5],[.5,.5,.5],0),collider:CharacterCollider={kind:'wall',x:p.x+.5,z:p.z+.5,bottom:p.y,top:p.y+1,radius:Math.SQRT1_2,wall:{halfWidth:.5,halfDepth:.5,yaw:0}};closest={id:record.id,prop:p,record,collider,shape,colliders:[],shapes:[]};}
+        break;}previous=t;t+=Math.max(.005,Math.min(.2,d*.75));
     }
     if(distance>limit)return null;
     return {point:[eye[0]+direction[0]*distance,eye[1]+direction[1]*distance,eye[2]+direction[2]*distance],distance,solid:closest};

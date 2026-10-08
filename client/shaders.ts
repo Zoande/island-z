@@ -271,6 +271,14 @@ fn pbr(base: vec3f, roughness: f32, n: vec3f, position: vec3f, visibility: f32, 
 }
 `; }
 export const sceneShader=makeSceneShader(false);
+/** The procedural surface is replaced only where a resident voxel cell has
+ * finished meshing. Cells without cuts keep the ordinary terrain pipeline. */
+export const minedSceneShader=sceneShader
+  .replace('@fragment fn shadowFragment(v: Interpolated) {','@fragment fn shadowFragment(v: Interpolated) { if(minedSkin(v.world)){discard;}')
+  .replace('@fragment fn fragmentMain(v: Interpolated, @builtin(front_facing) front: bool) -> @location(0) vec4f {','@fragment fn fragmentMain(v: Interpolated, @builtin(front_facing) front: bool) -> @location(0) vec4f { if(minedSkin(v.world)){discard;}')+`
+@group(2) @binding(0) var<storage,read> minedRegions:array<vec4f>;
+fn minedSkin(p:vec3f)->bool {for(var i=0u;i<u32(minedRegions[0].w);i++){if(all(p>=minedRegions[i*2u].xyz)&&all(p<=minedRegions[i*2u+1u].xyz)){return true;}}return false;}
+`;
 export const sceneryShader=makeSceneShader(true);
 export const buildPreviewShader=sceneryShader.replace('struct Material {', '@group(2) @binding(0) var<uniform> previewColor:vec4f;\nstruct Material {')
   .replace('return vec4f(fog(light, v.position), 1.0);',`let rim=pow(1.0-abs(dot(normal,normalize(-v.position))),2.0);

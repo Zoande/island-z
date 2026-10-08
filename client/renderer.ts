@@ -16,7 +16,7 @@ import type { MeshSurface } from '../shared/placement';
 import { playerCollider } from './player-colliders';
 import { grassMesh, oceanMesh, rockMesh,compactVertices,compactIndices, type GeometryData } from './geometry';
 import { loadGLB } from './glb';
-import { sceneShader,sceneryShader,predictedSceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
+import { sceneShader,minedSceneShader,sceneryShader,predictedSceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
 import {wallGeometry} from './wall-geometry';
 import {torchGeometry} from './torch-geometry';
 import {mergeGeometry,slabGeometry,wallTorchGeometry,campfireFlames} from './catalogue-geometry';
@@ -32,8 +32,8 @@ import {lodEntries,rangeFade,type LodBoundary} from './lod';
 import {qualities,type Quality,type QualitySettings} from './quality';
 
 interface Mesh { vertex: GPUBuffer; index: GPUBuffer; indexFormat:GPUIndexFormat; count: number; material: string;borrowed?:boolean;clipGroup?:GPUBindGroup }
-interface DamageDraw {record:SolidRecord;meshes:Mesh[];lods:Mesh[][];owns:boolean;prediction?:{base?:DamageDraw;regions:VolumeRegion[];signature:string;buffer:GPUBuffer}}
-interface Resident { data: ChunkData; mesh: Mesh; water?: Mesh; instance: GPUBuffer; lastUsed: number; seam?: string; placedProps?: Prop[]; colliders?:CharacterCollider[]; surfaceVertices?: Float32Array; support?: string;renderBounds?:[number,number] }
+interface DamageDraw {terrainInstance?:GPUBuffer;record:SolidRecord;meshes:Mesh[];lods:Mesh[][];owns:boolean;prediction?:{base?:DamageDraw;regions:VolumeRegion[];signature:string;buffer:GPUBuffer}}
+interface Resident { mining?:{signature:string;buffer:GPUBuffer;group:GPUBindGroup};data: ChunkData; mesh: Mesh; water?: Mesh; instance: GPUBuffer; lastUsed: number; seam?: string; placedProps?: Prop[]; colliders?:CharacterCollider[]; surfaceVertices?: Float32Array; support?: string;renderBounds?:[number,number] }
 interface Batch { mesh: Mesh; buffer: GPUBuffer; capacity: number; instances: Float32Array; count:number; shadow:boolean;nearest:number }
 interface PropRenderInfo {tree:boolean;radius:number;centerY:number;range:number;boundaries:LodBoundary[];shadowBoundaries:LodBoundary[];meshes:Mesh[][]}
 const vertexLayout: GPUVertexBufferLayout = { arrayStride: VERTEX_FLOATS * 4, attributes: [
@@ -97,6 +97,7 @@ export class IslandRenderer {
   private frameOnly!: GPUBindGroup;
   private materialLayout!: GPUBindGroupLayout;
   private scenePipeline!: GPURenderPipeline;
+  private minedPipeline!:GPURenderPipeline;private minedShadowPipeline!:GPURenderPipeline;
   private sceneryPipeline!:GPURenderPipeline;
   private editLayout!:GPUBindGroupLayout;private editPipelines!:Record<string,GPURenderPipeline>;
   readonly predictionTimings:{id:string;revision:number;milliseconds:number;meshMs:number;uploadMs:number;stages:number[];frame:number}[]=[];
@@ -160,7 +161,7 @@ export class IslandRenderer {
   get estimatedGpuBytes() {
     const buffers=new Set<GPUBuffer>([this.uniform,this.lightingUniform,this.postUniform,this.farUniform,this.oceanInstance,this.previewInstance,this.previewUniform,...this.materialUniforms].filter(Boolean));
     const add=(mesh?:Mesh)=>{if(mesh){buffers.add(mesh.vertex);buffers.add(mesh.index);}};
-    this.chunks.forEach(c=>{add(c.mesh);add(c.water);buffers.add(c.instance);});this.meshes.forEach(parts=>parts.forEach(add));this.damaged.forEach(d=>[d.meshes,...d.lods].flat().forEach(add));add(this.waterMesh);
+    this.chunks.forEach(c=>{add(c.mesh);add(c.water);buffers.add(c.instance);if(c.mining)buffers.add(c.mining.buffer);});this.meshes.forEach(parts=>parts.forEach(add));this.damaged.forEach(d=>{[d.meshes,...d.lods].flat().forEach(add);if(d.terrainInstance)buffers.add(d.terrainInstance);});add(this.waterMesh);
     [...this.viewBatchGroups.flatMap(m=>[...m.values()]),...this.shadowBatches.values(),...this.farBatches.values()].forEach(b=>buffers.add(b.buffer));
     const textures=[...this.textures,...this.targets,this.shadowTexture,this.staticShadowTexture,this.impostors?.texture,this.impostors?.surfaceTexture].filter(Boolean);
     let bytes=[...buffers].reduce((n,b)=>n+b.size,0);
@@ -240,6 +241,9 @@ export class IslandRenderer {
     this.sceneryDepthPipeline=await this.device.createRenderPipelineAsync({label:'Scenery depth coverage',layout:sceneLayout,vertex:{module:sceneryModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:sceneryModule,entryPoint:'depthFragment',targets:[{format:'rgba16float',writeMask:0}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil});
     this.sceneryEqualPipeline=await this.device.createRenderPipelineAsync({label:'Visible scenery shading',layout:sceneLayout,vertex:{module:sceneryModule,entryPoint:'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:sceneryModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float'}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:{...depthStencil,depthWriteEnabled:false,depthCompare:'equal'}});
     this.editLayout=this.device.createBindGroupLayout({entries:[{binding:0,visibility:GPUShaderStage.FRAGMENT,buffer:{type:'read-only-storage'}}]});
+    const minedModule=await createModule(minedSceneShader,'Mined terrain surface WGSL');
+    this.minedPipeline=await this.device.createRenderPipelineAsync({label:'Mined terrain skin',layout:this.device.createPipelineLayout({bindGroupLayouts:[frameLayout,this.materialLayout,this.editLayout]}),vertex:{module:minedModule,entryPoint:'vertexMain',buffers:[vertexLayout,instanceLayout]},fragment:{module:minedModule,entryPoint:'fragmentMain',targets:[{format:'rgba16float'}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil});
+    this.minedShadowPipeline=await this.device.createRenderPipelineAsync({label:'Mined terrain shadows',layout:this.device.createPipelineLayout({bindGroupLayouts:[frameOnlyLayout,this.materialLayout,this.editLayout]}),vertex:{module:minedModule,entryPoint:'shadowVertex',buffers:[vertexLayout,instanceLayout]},fragment:{module:minedModule,entryPoint:'shadowFragment',targets:[]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:{...depthStencil,depthBias:2,depthBiasSlopeScale:2}});
     const editModule=await createModule(predictedSceneryShader,'Immediate local destruction WGSL'),editLayout=this.device.createPipelineLayout({bindGroupLayouts:[frameLayout,this.materialLayout,this.editLayout]}),editShadowLayout=this.device.createPipelineLayout({bindGroupLayouts:[frameOnlyLayout,this.materialLayout,this.editLayout]});
     this.editPipelines={};for(const mode of ['shade','equal','depth','shadow'])this.editPipelines[mode]=await this.device.createRenderPipelineAsync({label:'Predicted solid '+mode,layout:mode==='shadow'?editShadowLayout:editLayout,vertex:{module:editModule,entryPoint:mode==='shadow'?'shadowVertex':'vertexMain',buffers:[sceneryLayout,sceneryInstanceLayout]},fragment:{module:editModule,entryPoint:mode==='shadow'?'shadowFragment':mode==='depth'?'depthFragment':'fragmentMain',targets:mode==='shadow'?[]:[{format:'rgba16float',writeMask:mode==='depth'?0:GPUColorWrite.ALL}]},primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:mode==='shadow'?{...depthStencil,depthBias:2,depthBiasSlopeScale:2}:mode==='equal'?{...depthStencil,depthWriteEnabled:false,depthCompare:'equal'}:depthStencil});
     const previewModule=await createModule(buildPreviewShader,'Building preview WGSL');
@@ -450,7 +454,7 @@ export class IslandRenderer {
       this.destroyChunk(chunk); this.chunks.delete(key); stream.forget(key);this.topologyRevision++;
     }
   }
-  private destroyChunk(chunk: Resident) { chunk.mesh.vertex.destroy(); chunk.mesh.index.destroy(); chunk.instance.destroy(); chunk.water?.vertex.destroy(); chunk.water?.index.destroy(); }
+  private destroyChunk(chunk: Resident) { chunk.mining?.buffer.destroy();chunk.mesh.vertex.destroy(); chunk.mesh.index.destroy(); chunk.instance.destroy(); chunk.water?.vertex.destroy(); chunk.water?.index.destroy(); }
   private instance(prop: Prop, camera: PlayerCamera) {
     let values=this.propInstances.get(prop);
     if(!values) {values=new Float32Array([0,0,0,prop.scale,...orientation(prop.normal??[0,1,0],prop.rotation),1,0,1]);this.propInstances.set(prop,values);}
@@ -488,12 +492,12 @@ export class IslandRenderer {
     this.damaged.set(record.id,{record,owns:true,meshes:[...skin,...patchGeometry.map(m=>this.mesh(m))],lods:[],prediction:{base,regions,signature,buffer}});this.damageGeometryRevision++;this.scenerySignature='';
     const milliseconds=performance.now()-start;this.predictionTimings.push({id:record.id,revision:record.revision,milliseconds,meshMs,uploadMs:milliseconds-meshMs,stages,frame:this.frameNumber});if(this.predictionTimings.length>300)this.predictionTimings.shift();return milliseconds;
   }
-  private disposeDamage(d:DamageDraw,baseline=true){for(const mesh of [d.meshes,...d.lods].flat()){for(const map of [...this.viewBatchGroups,this.shadowBatches]){map.get(mesh)?.buffer.destroy();map.delete(mesh);}if(d.owns&&!mesh.borrowed){mesh.vertex.destroy();mesh.index.destroy();}}d.prediction?.buffer.destroy();if(baseline&&d.prediction?.base)this.disposeDamage(d.prediction.base);}
+  private disposeDamage(d:DamageDraw,baseline=true){d.terrainInstance?.destroy();for(const mesh of [d.meshes,...d.lods].flat()){for(const map of [...this.viewBatchGroups,this.shadowBatches]){map.get(mesh)?.buffer.destroy();map.delete(mesh);}if(d.owns&&!mesh.borrowed){mesh.vertex.destroy();mesh.index.destroy();}}d.prediction?.buffer.destroy();if(baseline&&d.prediction?.base)this.disposeDamage(d.prediction.base);}
   setDamagedMesh(record:SolidRecord,geometry:VolumeMesh[],geometryLods:VolumeMesh[][]=[]){
     this.removeDamagedMesh(record.id);const owns=destructionRule(record.prop)?.mode!=='whole';
     const meshes=owns?[...geometry,...survivingFoliage(record,this.treeGeometry.get(`${record.prop.kind}-${record.prop.variant}-lod0`)??[])].map(g=>this.mesh(g)):this.meshes.get(`${record.prop.kind}-${record.prop.variant}-lod0`)??[];
     const lods=owns?geometryLods.map((level,i)=>[...level,...survivingFoliage(record,this.treeGeometry.get(`${record.prop.kind}-${record.prop.variant}-lod${Math.min(i+1,2)}`)??[])].map(g=>this.mesh(g))):[];
-    this.damaged.set(record.id,{record,owns,meshes,lods});this.damageGeometryRevision++;this.scenerySignature='';
+    this.damaged.set(record.id,{record,owns,meshes,lods,terrainInstance:record.prop.kind==='terrain'?this.device.createBuffer({label:'Mined terrain transform',size:32,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST}):undefined});this.damageGeometryRevision++;this.scenerySignature='';
   }
   updateDamagedPose(record:SolidRecord){const d=this.damaged.get(record.id);if(d){d.record=record;this.scenerySignature='';}}
   removeDamagedMesh(id:string){const d=this.damaged.get(id);if(!d)return;this.disposeDamage(d);this.damaged.delete(id);this.damageGeometryRevision++;this.scenerySignature='';}
@@ -534,7 +538,7 @@ export class IslandRenderer {
     if(drawKeyRevision!==this.drawKeyRevision) {this.drawKeyRevision=drawKeyRevision;this.cachedDrawKeys=stream.drawKeys(new Set(this.chunks.keys()));}
     const drawKeys=this.cachedDrawKeys;
     const drawn = drawKeys.map(key => this.chunks.get(key)!);
-    const gradeRevision=this.buildScene?.terrainRevision??0;
+    const gradeRevision=this.buildScene?this.buildScene.terrainRevision-this.buildScene.miningRevision:0;
     const signature=`${this.topologyRevision}/${drawKeys.join('|')}/${gradeRevision}`;
     const topologyChanged=signature!==this.topologySignature;
     this.topologySignature=signature;
@@ -667,6 +671,7 @@ export class IslandRenderer {
       if(!sphereInFrustum(viewPlanes,cx,cy,cz,chunkRadius)&&!sphereInFrustum(lightPlanes,cx,cy,cz,chunkRadius))continue;
       if(Math.hypot(Math.max(d.x-camera.position[0],0,camera.position[0]-d.x-e),Math.max(d.z-camera.position[2],0,camera.position[2]-d.z-e))>1000)continue;
       for (const prop of chunk.placedProps ?? []) {
+      if(['grass','pebble','algae','bush'].includes(prop.kind)&&this.buildScene&&this.buildScene.groundDistance([prop.x,this.buildScene.terrain(prop.x,prop.z).height-.025,prop.z])>0)continue;
       if((prop.kind==='rock'||prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm')&&(this.buildScene?.edits.get(naturalId(prop))?.removed||this.damaged.has(naturalId(prop))))continue;
       const distance = Math.hypot(prop.x - camera.position[0], prop.z - camera.position[2]);
       if(distance>1000)continue;
@@ -697,7 +702,7 @@ export class IslandRenderer {
       if(inView)for(const entry of lodEntries(distance,info.boundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=rangeFade(distance,info.range);for(const mesh of info.meshes[entry.level])this.append(mesh,values,false,distance);}
       if(caster)for(const entry of lodEntries(distance,info.shadowBoundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=1;for(const mesh of info.meshes[entry.level+(info.tree?settings.shadowLodOffset:0)])this.append(mesh,values,true);}
     }
-    for(const {record,meshes,lods}of this.damaged.values()){if(record.removed)continue;const p=record.pose?.position??[record.prop.x,record.prop.y,record.prop.z],distance=Math.hypot(p[0]-camera.position[0],p[2]-camera.position[2]);if(distance>settings.trees)continue;const bounds=record.fragmentBounds??record.source.bounds,center=worldPoint(record,bounds[0].map((v,k)=>(v+bounds[1][k])/2)as [number,number,number]),radius=Math.hypot(...bounds[1].map((v,k)=>(v-bounds[0][k])/2))*record.prop.scale+3,inView=sphereInFrustum(viewPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius),caster=distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius);if(!inView&&!caster)continue;const q=quaternion(record),values=new Float32Array([p[0]-camera.position[0],p[1]-camera.position[1],p[2]-camera.position[2],record.prop.scale,...q,1,0,rangeFade(distance,settings.trees)]);const levels=[meshes,...lods],entries=lodEntries(distance,lods.length?settings.treeLod.slice(0,lods.length):[]);for(const entry of entries){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;for(const mesh of levels[entry.level]){if(inView)this.append(mesh,values,false,distance);if(caster)this.append(mesh,values,true);}}}
+    for(const {record,meshes,lods}of this.damaged.values()){if(record.removed||record.prop.kind==='terrain')continue;const p=record.pose?.position??[record.prop.x,record.prop.y,record.prop.z],distance=Math.hypot(p[0]-camera.position[0],p[2]-camera.position[2]);if(distance>settings.trees)continue;const bounds=record.fragmentBounds??record.source.bounds,center=worldPoint(record,bounds[0].map((v,k)=>(v+bounds[1][k])/2)as [number,number,number]),radius=Math.hypot(...bounds[1].map((v,k)=>(v-bounds[0][k])/2))*record.prop.scale+3,inView=sphereInFrustum(viewPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius),caster=distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius);if(!inView&&!caster)continue;const q=quaternion(record),values=new Float32Array([p[0]-camera.position[0],p[1]-camera.position[1],p[2]-camera.position[2],record.prop.scale,...q,1,0,rangeFade(distance,settings.trees)]);const levels=[meshes,...lods],entries=lodEntries(distance,lods.length?settings.treeLod.slice(0,lods.length):[]);for(const entry of entries){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;for(const mesh of levels[entry.level]){if(inView)this.append(mesh,values,false,distance);if(caster)this.append(mesh,values,true);}}}
     this.visibleBatches=this.viewBatchGroups.flatMap(m=>[...m.values()].filter(b=>b.count).sort((a,b)=>this.frontToBack?a.nearest-b.nearest:0));
     this.casterBatches=[...this.shadowBatches.values()].filter(b=>b.count);
     }
@@ -707,6 +712,14 @@ export class IslandRenderer {
     if(sceneryChanged)for (const batch of [...this.visibleBatches,...this.casterBatches])this.write(batch.buffer,batch.instances.subarray(0,batch.count*11));
     this.profiler.endStage('instanceUpload',stage);stage=this.profiler.mark();
     const encoder = this.device.createCommandEncoder();this.gpuProfiler?.begin(this.frameNumber);
+    const mines=[...this.damaged.values()].filter(d=>d.terrainInstance&&!d.record.removed);
+    for(const d of mines){const p=d.record.prop;this.write(d.terrainInstance!,new Float32Array([p.x-camera.position[0],p.y-camera.position[1],p.z-camera.position[2],1,0,0,0,1]));}
+    for(const chunk of new Set([...visible,...shadowChunks])){
+      const key=String(this.damageGeometryRevision);if(chunk.mining?.signature===key)continue;
+      const e=BASE_CHUNK*2**chunk.data.level,regions=mines.filter(d=>{const p=d.record.prop;return p.x+1>=chunk.data.x&&p.x<=chunk.data.x+e&&p.z+1>=chunk.data.z&&p.z<=chunk.data.z+e;});
+      chunk.mining?.buffer.destroy();chunk.mining=undefined;
+      if(regions.length){const values=new Float32Array(regions.length*8);regions.forEach((d,i)=>{const p=d.record.prop;values.set([p.x,p.y,p.z,i===0?regions.length:0,p.x+1,p.y+1,p.z+1,0],i*8);});const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Mined terrain cells');chunk.mining={signature:key,buffer,group:this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]})};}
+    }
     const draw = (pass: GPURenderPassEncoder, mesh: Mesh, instances: GPUBuffer, count = 1,mode?:'shade'|'equal'|'depth'|'shadow') => {
       const material = this.materials.get(mesh.material); if (!material) throw new Error(`Unknown model material ${mesh.material}`);
       if(mesh.clipGroup&&mode){pass.setPipeline(this.editPipelines[mode]);pass.setBindGroup(2,mesh.clipGroup);}
@@ -714,6 +727,8 @@ export class IslandRenderer {
       if(mesh.clipGroup&&mode)pass.setPipeline(mode==='shadow'?this.sceneryShadowPipeline:mode==='depth'?this.sceneryDepthPipeline:mode==='equal'?this.sceneryEqualPipeline:this.sceneryPipeline);
       this.drawCalls++; this.triangles += mesh.count / 3 * count;
     };
+    const drawTerrain=(pass:GPURenderPassEncoder,chunk:Resident,shadow:boolean)=>{pass.setPipeline(chunk.mining?(shadow?this.minedShadowPipeline:this.minedPipeline):(shadow?this.shadowPipeline:this.scenePipeline));if(chunk.mining)pass.setBindGroup(2,chunk.mining.group);draw(pass,chunk.mesh,chunk.instance);};
+    const drawMines=(pass:GPURenderPassEncoder,shadow:boolean)=>{pass.setPipeline(shadow?this.shadowPipeline:this.scenePipeline);for(const d of mines){const p=d.record.prop;if(Math.hypot(p.x-camera.position[0],p.z-camera.position[2])>this.distance+2)continue;for(const mesh of d.meshes)draw(pass,mesh,d.terrainInstance!);}};
     const staticChanged=!this.cacheStaticShadows||scenerySignature!==this.staticShadowSignature;
     this.staticShadowSignature=scenerySignature;
     const staticCaster=(batch:Batch)=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock'||batch.mesh.material.startsWith('wall-')||['torch-wood','torch-head','linen','iron','brick','ember'].includes(batch.mesh.material);
@@ -721,7 +736,7 @@ export class IslandRenderer {
       const pass=encoder.beginRenderPass({label:'Static sun casters',timestampWrites:this.gpuProfiler?.pass(0),colorAttachments:[],depthStencilAttachment:{view:this.staticShadowTexture.createView(),depthClearValue:1,depthLoadOp:staticChanged?'clear':'load',depthStoreOp:'store'}});
       if(staticChanged) {
         pass.setPipeline(this.shadowPipeline);pass.setBindGroup(0,this.frameOnly);
-        for(const chunk of shadowChunks)draw(pass,chunk.mesh,chunk.instance);
+        for(const chunk of shadowChunks)drawTerrain(pass,chunk,true);drawMines(pass,true);
         pass.setPipeline(this.sceneryShadowPipeline);
         for(const batch of this.casterBatches)if(staticCaster(batch))draw(pass,batch.mesh,batch.buffer,batch.count,'shadow');
       }
@@ -735,7 +750,7 @@ export class IslandRenderer {
     shadow.end();
     let opaque = encoder.beginRenderPass({ label: 'Terrain, vegetation and sky', timestampWrites:this.gpuProfiler?.pass(2),colorAttachments: [{ view: this.opaque.createView(), clearValue: { r: .5, g: .7, b: .8, a: 1 }, loadOp: 'clear', storeOp: 'store' }], depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' } });
     opaque.setPipeline(this.scenePipeline); opaque.setBindGroup(0, this.frameGroup);
-    for (const chunk of visible) draw(opaque, chunk.mesh, chunk.instance);
+    for (const chunk of visible) drawTerrain(opaque,chunk,false);drawMines(opaque,false);
     // Only profiling splits the pass, to identify terrain vs vegetation cost.
     if(this.gpuProfiler?.sampling) {
       opaque.end();opaque=encoder.beginRenderPass({label:'Profile scenery and sky',timestampWrites:this.gpuProfiler?.pass(3),colorAttachments:[{view:this.opaque.createView(),loadOp:'load',storeOp:'store'}],depthStencilAttachment:{view:this.depth.createView(),depthLoadOp:'load',depthStoreOp:'store'}});
