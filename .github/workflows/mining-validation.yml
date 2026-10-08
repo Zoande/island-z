@@ -22,4 +22,5 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npx vitest run tests/mining.test.ts --maxWorkers=1
+      - run: npx vitest run --maxWorkers=1
       - run: npm run build:server
