@@ -26,8 +26,8 @@ app.innerHTML=`
     <label class="cycle-toggle"><input id="daylight-auto" type="checkbox" checked/> Natural day/night cycle</label>
     <div class="daylight-presets"><button type="button" data-hour="6.5">Dawn</button><button type="button" data-hour="12">Noon</button><button type="button" data-hour="0">Night</button></div>
     <p class="setting-note">3-hour day · 1½-hour night. Set a time or pause the cycle.</p>
-    <div class="meta-row field"><label for="quality">Render quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
-    <p id="quality-description" class="setting-note">${qualityDescriptions.medium}</p>
+    <div class="meta-row field"><label for="quality">Render quality</label><select id="quality"><option value="low" selected>Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
+    <p id="quality-description" class="setting-note">${qualityDescriptions.low}</p>
     <div class="controls"><span><kbd>W A S D</kbd>Move / swim</span><span><kbd>SPACE</kbd>Jump / swim up</span><span><kbd>SHIFT</kbd>Sprint / dive</span><span><kbd>MOUSE</kbd>Look / steer</span><span><kbd>ESC</kbd>Release mouse</span></div>
     </div></section>
   <div class="caption"><div id="biome" class="biome">Coastal grassland</div></div>
