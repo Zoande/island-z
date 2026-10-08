@@ -83,7 +83,7 @@ export class IslandRenderer {
   private previewPipeline!:GPURenderPipeline;
   private previewInstance!:GPUBuffer;private previewUniform!:GPUBuffer;private previewGroup!:GPUBindGroup;
   private casterBatches:Batch[]=[];
-  quality: Quality = 'medium'; daylightHour = 9;
+  quality: Quality = 'low'; daylightHour = 9;
   private lightingUniform!:GPUBuffer;private lightingValues=new Float32Array(LIGHTING_FLOATS);
   activePointLights=0;
   drawCalls = 0; triangles = 0; frameNumber = 0;
