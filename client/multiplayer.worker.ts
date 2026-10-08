@@ -6,6 +6,7 @@ import {initializePhysics} from '../shared/solid-physics';
 import {encodeMessage,decodeMessage,PROTOCOL_VERSION,type InputStep,type PlayerState} from '../shared/network';
 import type {WorldPatch,SolidRecord} from '../shared/destruction';
 import {solidCells} from '../shared/destruction';
+import {closeForReconnect} from './socket-close';
 let socket:WebSocket|undefined,scene:BuildScene,environment:SimulationEnvironment,character:Character;
 let identity='',nickname='',endpoint='',api='',connection='',worldKey='',input:CharacterInput=idleInput,seq=0,ack=0,simTime=0,serverTime=0,serverTick=0,connected=false,stopped=false;
 let last=performance.now(),accumulator=0,lastSend=0,lastState=0,lastPing=0,backoff=500,retry=0;
@@ -14,7 +15,7 @@ const commands=new Map<string,{rpc:number;request:any;kind:string;sent:number}>(
 const metrics={sentBytes:0,receivedBytes:0,messages:0};
 let lastMetrics=0;
 function post(type:string,value:any={}){self.postMessage({type,...value});}
-function send(m:any){if(socket?.readyState!==WebSocket.OPEN)return false;if(socket.bufferedAmount>128*1024){socket.close(1013,'Send queue full');return false;}const bytes=encodeMessage(m);metrics.sentBytes+=bytes.length;socket.send(bytes);return true;}
+function send(m:any){if(socket?.readyState!==WebSocket.OPEN)return false;if(socket.bufferedAmount>128*1024){closeForReconnect(socket,'Send queue full');return false;}const bytes=encodeMessage(m);metrics.sentBytes+=bytes.length;socket.send(bytes);return true;}
 function flushInputs(){if(connected&&outgoing.length){send({type:'inputs',steps:outgoing.splice(0,24)});}}
 function applyWorld(m:any){
  const patch=m.patch??m.edits as WorldPatch;for(const o of m.objects??[])scene.add(o);
@@ -28,7 +29,7 @@ function onMessage(m:any,bytes=0){
  if(m.type==='welcome'){if(worldKey&&worldKey!==m.worldKey){stopped=true;socket?.close();post('fatal',{error:'The server world changed; reload to join it'});return;}worldKey=m.worldKey;character.restore(m.state);history=[];outgoing=[];remote.clear();latestPlayers=undefined;seq=ack=0;simTime=serverTime=m.time;serverTick=m.tick;connected=true;backoff=500;last=performance.now();accumulator=0;post('welcome',{message:m});if(wanted.length)subscribe(wanted,true);for(const [id,c]of commands){if(performance.now()-c.sent>30000){commands.delete(id);self.postMessage({rpc:c.rpc,error:'Confirmation expired; refresh world state before retrying'});}else send({type:'command',kind:c.kind,request:c.request,inputSeq:0});}return;}
  if(m.type==='subscribed'){if(m.generation===generation)subscribeResolve();return;}
  if(m.type==='players'){if(loading){latestPlayers=m;return;}serverTick=m.tick;serverTime=m.time;remote=new Map(m.players.map((p:PlayerState)=>[p.id,p]));const own=remote.get(identity);if(own){const correction=Math.hypot(...own.state.feet.map((v:number,i:number)=>v-character.feet[i]));ack=own.ack;history=history.filter(i=>i.seq>ack);character.restore(own.state);simTime=m.time;for(const h of history){character.update(CHARACTER.timestep,h.input);simTime+=CHARACTER.timestep;}post('players',{message:m,correction,pending:history.length,receivedAt:performance.timeOrigin+performance.now()});}return;}
- if(loading&&(m.type==='world'||m.type==='motion')){if(buffered.length>=128||(bufferedBytes+=bytes)>8*1024*1024){socket?.close(1013,'Region replay queue exceeded');return;}buffered.push(m);return;}
+ if(loading&&(m.type==='world'||m.type==='motion')){if(buffered.length>=128||(bufferedBytes+=bytes)>8*1024*1024){closeForReconnect(socket,'Region replay queue exceeded');return;}buffered.push(m);return;}
  if(m.type==='world'){applyWorld(m);return;}
  if(m.type==='motion'){for(const v of m.states){const r=scene.edits.get(v.id);if(r&&r.revision===v.revision){const next={...r,pose:v.pose,fall:v.fall};scene.edits.set(v.id,next);environment.pose(next);}}post('motion',{message:m});return;}
  if(m.type==='receipt'){const c=commands.get(m.id);if(c){commands.delete(m.id);self.postMessage({rpc:c.rpc,value:m.result});}return;}
@@ -52,7 +53,7 @@ self.onmessage=async(e:MessageEvent)=>{const m=e.data;try{
  else if(m.type==='stop'){stopped=true;socket?.close();environment?.dispose();}
  }catch(error){if(m.rpc)self.postMessage({rpc:m.rpc,error:String(error)});else post('status',{connected:false,error:String(error)});}};
 setInterval(()=>{const now=performance.now();if(stopped)return;if(!connected){if(character&&socket?.readyState===WebSocket.CLOSED&&now>=retry)connect();return;}
- accumulator+=Math.min(.1,(now-last)/1000);last=now;let count=0;while(accumulator>=CHARACTER.timestep&&count++<12){accumulator-=CHARACTER.timestep;if(history.length>=120){socket?.close(1013,'Prediction queue exceeded');break;}const step={seq:++seq,input:{...input,swimVector:input.swimVector&&[...input.swimVector]as [number,number,number]}};character.update(CHARACTER.timestep,step.input);simTime+=CHARACTER.timestep;history.push(step);outgoing.push(step);}
+ accumulator+=Math.min(.1,(now-last)/1000);last=now;let count=0;while(accumulator>=CHARACTER.timestep&&count++<12){accumulator-=CHARACTER.timestep;if(history.length>=120){closeForReconnect(socket,'Prediction queue exceeded');break;}const step={seq:++seq,input:{...input,swimVector:input.swimVector&&[...input.swimVector]as [number,number,number]}};character.update(CHARACTER.timestep,step.input);simTime+=CHARACTER.timestep;history.push(step);outgoing.push(step);}
  if(now-lastSend>=1000/30){lastSend=now;flushInputs();}if(now-lastState>=1000/60){lastState=now;post('state',{state:character.capture(),time:simTime,connected});}if(now-lastPing>=5000){lastPing=now;send({type:'ping',sent:now});}
  if(now-lastMetrics>1000){lastMetrics=now;post('metrics',{...metrics,serverTick,pending:history.length});}
  for(const [id,c]of commands)if(now-c.sent>30000){commands.delete(id);self.postMessage({rpc:c.rpc,error:'Confirmation expired; reload the authoritative region before retrying'});}
