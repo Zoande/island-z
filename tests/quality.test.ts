@@ -3,6 +3,11 @@ import {qualities,type Quality} from '../client/quality';
 import {lodEntries} from '../client/lod';
 import {IslandRenderer} from '../client/renderer';
 describe('graphics presets',()=>{
+  it('defaults new renderers to the low graphics preset',()=>{
+    const renderer=new IslandRenderer({}as HTMLCanvasElement,{seed:'quality-default-test',islandSizeMeters:128});
+    expect(renderer.quality).toBe('low');
+    expect(renderer.distance).toBe(qualities.low.distance);
+  });
   it('increases shadow resolution, range and geometry retention with quality',()=>{
     const list=[qualities.low,qualities.medium,qualities.high];
     for(let i=1;i<list.length;i++) {
