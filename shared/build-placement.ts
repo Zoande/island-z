@@ -28,7 +28,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
   const catalogue=cataloguePlacement(scene,request);if(catalogue)return catalogue;
   const definition=objectDefinition(request.definitionId),hit=scene.raycast(request.eye,request.direction);
   const point=hit?.point??[request.eye[0]+request.direction[0]*BUILD_REACH,request.eye[1]+request.direction[1]*BUILD_REACH,request.eye[2]+request.direction[2]*BUILD_REACH]as Point3;
-  const object:BuildObject={id:request.requestId,definitionId:request.definitionId,variant:request.variant,position:[point[0],scene.terrain(point[0],point[2]).height,point[2]],rotation:request.rotation%(Math.PI*2),normal:[0,1,0],support:{kind:'terrain'}};
+  const object:BuildObject={id:request.requestId,definitionId:request.definitionId,variant:request.variant,position:[point[0],scene.groundSurface(point[0],point[2],point[1]).height,point[2]],rotation:request.rotation%(Math.PI*2),normal:[0,1,0],support:{kind:'terrain'}};
   let anchor:BuildSolid|undefined;
   if(definition.wall&&hit) {
     let best=Infinity,socket:SnapSocket|undefined;
@@ -47,10 +47,10 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
     }else if(hit.solid?.collider.kind==='rock'){anchor=hit.solid;object.support={kind:'rock',id:anchor.id};}
   }
   const fail=(code:string,reason:string):Placement=>({object,valid:false,code,reason});
-  const terrain=scene.terrain(object.position[0],object.position[2]);
+  const terrain=scene.groundSurface(object.position[0],object.position[2],object.position[1]);
   if(definition.family==='rock') {
     object.normal=terrain.normal;const prop=buildProp(object);
-    object.position[1]=embeddedRockHeight(scene.rocks[prop.variant],prop.x,prop.z,prop.scale,orientation(object.normal,object.rotation),(x,z)=>scene.terrain(x,z).height);
+    object.position[1]=embeddedRockHeight(scene.rocks[prop.variant],prop.x,prop.z,prop.scale,orientation(object.normal,object.rotation),(x,z)=>scene.groundSurface(x,z,object.position[1]).height);
   }else if(definition.family==='tree')object.position[1]=terrain.height-.20;
   else if(definition.family==='fixture')object.position[1]=terrain.height-.04;
   if(!hit)return fail('reach','Look at a surface within 10 meters');
@@ -61,7 +61,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
     const w=definition.wall!,samples:Point3[]=[],heights:number[]=[];
     for(let ix=0;ix<=12;ix++)for(const iz of [-1,0,1]) {
       const x=(ix/12-.5)*w.width,z=iz*w.depth/2,c=Math.cos(object.rotation),s=Math.sin(object.rotation),px=object.position[0]+x*c+z*s,pz=object.position[2]-x*s+z*c;
-      let height=scene.terrain(px,pz).height;
+      let height=scene.groundSurface(px,pz,object.position[1]).height;
       if(object.support.kind==='rock') {
         const surface=rockSurface(anchor!.collider,px,pz);if(!surface||surface.normal[1]<.85)return fail('rock-support','The rock needs a broad, level top');height=surface.height;
       }
@@ -86,7 +86,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
     const prop=buildProp(object);candidate=scene.solid(prop,object.id,object);const radius=candidate.collider.radius;
     for(let i=0;i<12;i++) {
       const angle=i*Math.PI/6,dx=Math.cos(angle)*radius,dz=Math.sin(angle)*radius,plane=terrain.height-(terrain.normal[0]*dx+terrain.normal[2]*dz)/terrain.normal[1];
-      if(Math.abs(scene.terrain(prop.x+dx,prop.z+dz).height-plane)>(definition.family==='rock'?.5*prop.scale:.3))return fail('ground','The ground is too uneven for this object');
+      if(Math.abs(scene.groundSurface(prop.x+dx,prop.z+dz,object.position[1]).height-plane)>(definition.family==='rock'?.5*prop.scale:.3))return fail('ground','The ground is too uneven for this object');
     }
     const water=scene.world.surfaceWater(object.position[0],object.position[2]);if(definition.family==='tree'&&water&&terrain.height<water.level+.05)return fail('water','Trees need dry ground');
     if(definition.family==='fixture'&&water&&terrain.height<water.level+.05)return fail('water','Torches need dry ground');

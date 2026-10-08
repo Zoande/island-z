@@ -28,7 +28,7 @@ export const treeSolidAssets=new Map<string,TreeSolidAsset>();
 const naturalIds=new WeakMap<Prop,{kind:Prop['kind'];x:number;z:number;id:string}>();
 export function naturalId(p:Prop){const cached=naturalIds.get(p);if(cached&&cached.kind===p.kind&&cached.x===p.x&&cached.z===p.z)return cached.id;const id=`natural:${p.kind}:${p.x.toFixed(8)}:${p.z.toFixed(8)}`;naturalIds.set(p,{kind:p.kind,x:p.x,z:p.z,id});return id;}
 export const isTree=(p:Prop)=>p.kind==='oak'||p.kind==='birch'||p.kind==='palm';
-export function destructionRule(p:Prop){return isTree(p)?objectDefinition('tree').destruction!:objectRegistry.get(p.kind)?.destruction;}
+export function destructionRule(p:Prop){return p.kind==='terrain'?{mode:'voxel' as const,hardness:1,repairable:false}:isTree(p)?objectDefinition('tree').destruction!:objectRegistry.get(p.kind)?.destruction;}
 export function quaternion(r:Pick<SolidRecord,'prop'|'pose'>):[number,number,number,number]{return r.pose?.rotation??orientation(r.prop.normal??[0,1,0],r.prop.rotation);}
 export function localPoint(r:Pick<SolidRecord,'prop'|'pose'>,p:Point3):Point3{const q=quaternion(r),o=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z],v=rotate(p.map((n,i)=>(n-o[i])/r.prop.scale)as Point3,[-q[0],-q[1],-q[2],q[3]]);return v;}
 export function worldPoint(r:Pick<SolidRecord,'prop'|'pose'>,p:Point3):Point3{const v=rotate(p.map(n=>n*r.prop.scale)as Point3,quaternion(r)),o=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z];return v.map((n,i)=>n+o[i])as Point3;}
@@ -59,6 +59,7 @@ export function openingBrush(record:SolidRecord,kind:'door'|'window'):EditBrush{
 export function actionBrush(record:SolidRecord,point:Point3,direction:Point3,repair:boolean,seed:number):EditBrush{
   const rule=destructionRule(record.prop)!,power=Math.cbrt(DESTRUCTION.playerPower),hardness=rule.hardness,scale=record.prop.scale;
   const axis=localDirection(record,direction);let center=localPoint(record,point);
+  if(record.prop.kind==='terrain')return {center,axis,radius:.32,depth:.4,seed,noiseOrigin:[record.prop.x,record.prop.y,record.prop.z]};
   if(repair){const volume=new SparseVolume(record.source,record.volume);for(let i=0;i<240;i++){const p=center.map((v,k)=>v+axis[k]*i*.0125/scale)as Point3;if(volume.base(p)<=.002&&volume.distance(p)>volume.base(p)+.003){center=p.map((v,k)=>v-axis[k]*.0125/scale)as Point3;break;}}}
   return {center,axis,radius:(repair?DESTRUCTION.repairRadius:.12*power/Math.sqrt(hardness))/scale,depth:(repair?DESTRUCTION.repairDepth:.1*power/hardness)/scale,seed};
 }

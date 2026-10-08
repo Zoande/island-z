@@ -5,7 +5,7 @@ export interface CollisionBox {center:Point3;half:Point3;rotation?:[number,numbe
  * dynamic solids; static solids use the extracted surface triangle mesh. */
 export function collisionBoxes(source:SolidSource,state:VolumeState,step=.05):CollisionBox[]{
   const volume=new SparseVolume(source,state),rows=new Map<string,Set<number>>();
-  for(const primitive of source.primitives){const [a,b]=primitiveBounds(primitive),lo=a.map(v=>Math.floor(v/step)),hi=b.map(v=>Math.ceil(v/step));for(let z=lo[2];z<=hi[2];z++)for(let y=lo[1];y<=hi[1];y++)for(let x=lo[0];x<=hi[0];x++){
+  for(const primitive of source.primitives){const terrain=primitive.type==='heightfield'&&primitive.terrain,[a,b]=terrain?source.bounds:primitiveBounds(primitive),lo=a.map(v=>Math.floor(v/step)),hi=b.map(v=>Math.ceil(v/step)-(terrain?1:0));for(let z=lo[2];z<=hi[2];z++)for(let y=lo[1];y<=hi[1];y++)for(let x=lo[0];x<=hi[0];x++){
     const p:Point3=[(x+.5)*step,(y+.5)*step,(z+.5)*step];if(primitiveDistance(p,primitive)>0)continue;const q=p.map(v=>Math.round(v/VOXEL_SIZE));if(volume.sample(q[0],q[1],q[2])>=0)continue;const key=`${y}:${z}`,row=rows.get(key)??new Set<number>();row.add(x);rows.set(key,row);
   }}
   const runs=new Map<string,{x:number;y:number;z:number;nx:number;ny:number;nz:number}[]>();

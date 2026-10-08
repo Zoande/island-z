@@ -2,17 +2,17 @@ import {simplifyPlanar} from './planar-mesh';
 import type {Point3} from './rocks';
 
 export const VOLUME_VERSION=1, VOXEL_SIZE=.025, BRICK_SIZE=8, DISTANCE_UNIT=.0001;
-export type SolidPrimitive={type:'box';center:Point3;half:Point3;material:string}|{type:'capsule'|'cylinder';a:Point3;b:Point3;r0:number;r1:number;material:string;branch?:number}|{type:'planes';planes:number[][];bounds:[Point3,Point3];material:string}|{type:'heightfield';heights:number[];grid:number;spacing:number;bounds:[Point3,Point3];material:string};
+export type SolidPrimitive={type:'box';center:Point3;half:Point3;material:string}|{type:'capsule'|'cylinder';a:Point3;b:Point3;r0:number;r1:number;material:string;branch?:number}|{type:'planes';planes:number[][];bounds:[Point3,Point3];material:string}|{type:'heightfield';heights:number[];grid:number;spacing:number;bounds:[Point3,Point3];material:string;terrain?:boolean;weights?:number[][]};
 export interface SolidSource {version:1;primitives:SolidPrimitive[];bounds:[Point3,Point3]}
 export interface VolumeState {version:1;bricks:Record<string,Int16Array>;clips?:{normal:Point3;offset:number}[];mask?:Record<string,number[]>}
-export interface EditBrush {center:Point3;axis:Point3;radius:number;depth:number;seed:number;box?:Point3}
+export interface EditBrush {center:Point3;axis:Point3;radius:number;depth:number;seed:number;box?:Point3;noiseOrigin?:Point3}
 export interface VolumeMesh {vertices:Float32Array;indices:Uint32Array;material:string;prepared?:VolumeMesh[]}
 export const emptyVolume=():VolumeState=>({version:1,bricks:{}});
 const dot=(a:Point3,b:Point3)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 export function primitiveDistance(p:Point3,s:SolidPrimitive):number {
   if(s.type==='box'){const x=Math.abs(p[0]-s.center[0])-s.half[0],y=Math.abs(p[1]-s.center[1])-s.half[1],z=Math.abs(p[2]-s.center[2])-s.half[2];return Math.hypot(Math.max(0,x),Math.max(0,y),Math.max(0,z))+Math.min(0,Math.max(x,y,z));}
   if(s.type==='planes'){let d=-Infinity;for(const v of s.planes)d=Math.max(d,v[0]*p[0]+v[1]*p[1]+v[2]*p[2]-v[3]);return d;}
-  if(s.type==='heightfield'){const u=Math.max(0,Math.min(s.grid-1e-8,(p[0]-s.bounds[0][0])/s.spacing)),v=Math.max(0,Math.min(s.grid-1e-8,(p[2]-s.bounds[0][2])/s.spacing)),x=Math.floor(u),z=Math.floor(v),f=u-x,g=v-z,n=s.grid+1,a=s.heights[z*n+x],b=s.heights[z*n+x+1],c=s.heights[(z+1)*n+x],d=s.heights[(z+1)*n+x+1],h=f+g<=1?a+(b-a)*f+(c-a)*g:b*(1-g)+d*(f+g-1)+c*(1-f),dx=(f+g<=1?b-a:d-c)/s.spacing,dz=(f+g<=1?c-a:d-b)/s.spacing;return Math.max((p[1]-h)/Math.hypot(dx,1,dz),s.bounds[0][1]-p[1],s.bounds[0][0]-p[0],p[0]-s.bounds[1][0],s.bounds[0][2]-p[2],p[2]-s.bounds[1][2]);}
+  if(s.type==='heightfield'){const u=Math.max(0,Math.min(s.grid-1e-8,(p[0]-s.bounds[0][0])/s.spacing)),v=Math.max(0,Math.min(s.grid-1e-8,(p[2]-s.bounds[0][2])/s.spacing)),x=Math.floor(u),z=Math.floor(v),f=u-x,g=v-z,n=s.grid+1,a=s.heights[z*n+x],b=s.heights[z*n+x+1],c=s.heights[(z+1)*n+x],d=s.heights[(z+1)*n+x+1],h=f+g<=1?a+(b-a)*f+(c-a)*g:b*(1-g)+d*(f+g-1)+c*(1-f),dx=(f+g<=1?b-a:d-c)/s.spacing,dz=(f+g<=1?c-a:d-b)/s.spacing;if(s.terrain)return (p[1]-h)/Math.hypot(dx,1,dz);return Math.max((p[1]-h)/Math.hypot(dx,1,dz),s.bounds[0][1]-p[1],s.bounds[0][0]-p[0],p[0]-s.bounds[1][0],s.bounds[0][2]-p[2],p[2]-s.bounds[1][2]);}
   const x=s.b[0]-s.a[0],y=s.b[1]-s.a[1],z=s.b[2]-s.a[2],px=p[0]-s.a[0],py=p[1]-s.a[1],pz=p[2]-s.a[2],length=Math.hypot(x,y,z),raw=(px*x+py*y+pz*z)/Math.max(1e-12,length*length),t=Math.max(0,Math.min(1,raw));if(s.type==='cylinder'){const radial=Math.hypot(px-x*raw,py-y*raw,pz-z*raw)-(s.r0+(s.r1-s.r0)*t),cap=Math.max(-raw,raw-1)*length;return Math.hypot(Math.max(0,radial),Math.max(0,cap))+Math.min(0,Math.max(radial,cap));}return Math.hypot(px-x*t,py-y*t,pz-z*t)-(s.r0+(s.r1-s.r0)*t);
 }
 const sourceIndices=new WeakMap<SolidSource,Map<string,SolidPrimitive[]>>();
@@ -41,7 +41,8 @@ export function brushDistance(p:Point3,b:EditBrush):number {
   if(b.box)return primitiveDistance(p,{type:'box',center:b.center,half:b.box,material:''});
   const x=p[0]-b.center[0],y=p[1]-b.center[1],z=p[2]-b.center[2],t=x*b.axis[0]+y*b.axis[1]+z*b.axis[2],radial=Math.hypot(x-b.axis[0]*t,y-b.axis[1]*t,z-b.axis[2]*t);
   // Coherent, integer-seeded chips; identical in workers and Node.
-  const jitter=(integerHash(Math.floor(p[0]*32),Math.floor(p[1]*32),Math.floor(p[2]*32),b.seed)-.5)*b.radius*.06;
+  const origin=b.noiseOrigin??[0,0,0];
+  const jitter=(integerHash(Math.floor((p[0]+origin[0])*32),Math.floor((p[1]+origin[1])*32),Math.floor((p[2]+origin[2])*32),b.seed)-.5)*b.radius*.06;
   const radialDistance=radial-b.radius-jitter,axialDistance=Math.abs(t-b.depth*.45)-b.depth*.55;return Math.hypot(Math.max(0,radialDistance),Math.max(0,axialDistance))+Math.min(0,Math.max(radialDistance,axialDistance));
 }
 /** Sparse samples are object-local; the source is evaluated only when a sample

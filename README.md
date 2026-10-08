@@ -398,9 +398,12 @@ sheet from Blender sources into `artifacts/vegetation-inspection.png`.
 
 ## Destruction and repair
 
-Hold right-click to cut wood, rocks, walls, floors, and roofs within 4 m. Small
+Hold right-click to mine ground or cut wood, rocks, walls, floors, and roofs within 4 m. Small
 buildables dismantle once per press. Hold R to repair surviving structural
 builds; T rotates the building preview. Real holes affect collision and shadows.
-Cuts, removals, floor grading, openings, and fallen tree pieces are saved.
+Cuts, mining, removals, floor grading, openings, and fallen tree pieces are saved.
+Ground mining supports pits and tunnels. A thin surface layer follows the local
+terrain; exposed mountain interiors are stone regardless of altitude. Mining
+creates no inventory drops. See [mining](docs/mining.md) for scope and architecture.
 See [destruction foundations and checks](docs/destruction.md) for architecture,
 controls, preparation assets, synchronization, and diagnostics.

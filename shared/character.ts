@@ -5,7 +5,7 @@ export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boole
 export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river';offshoreMeters?:number}
 export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall'|'fixture'|'player';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
 export interface CharacterEnvironment {
-  surface(x:number,z:number):MeshSurface|null;
+  surface(x:number,z:number,feetY?:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
   water?(x:number,z:number):CharacterWater|null;
   solidMovement?(feet:[number,number,number],desired:[number,number,number],radius:number,height:number,step:number,snap:number):{feet:[number,number,number];grounded:boolean}|null;
@@ -54,11 +54,11 @@ export class Character {
   restore(state:CharacterState){this.feet.set(state.feet);this.velocity.set(state.velocity);const {feet,velocity,...rest}=state;Object.assign(this,rest);this.home=state.home&&[...state.home];}
   contact(delta:[number,number,number]):[number,number,number]{const [x,y,z]=this.feet,colliders=this.environment.colliders(x,z).filter(c=>c.kind!=='player'),[nx,nz]=this.sweep(x,z,delta[0],delta[2],colliders),surface=this.support(nx,nz,colliders);if(!surface||surface.height>y+CHARACTER.stepHeight)return [x,y,z];return this.environment.solidMovement?.([x,y,z],[nx-x,0,nz-z],CHARACTER.radius,CHARACTER.height,0,0)?.feet??[nx,y,nz];}
   private support(x:number,z:number,colliders:readonly CharacterCollider[]=this.environment.colliders(x,z)):MeshSurface|null {
-    const center=this.environment.surface(x,z);if(!center)return null;
+    const center=this.environment.surface(x,z,this.feet[1]);if(!center)return null;
     let height=center.height,normal=center.normal;
     const offset=CHARACTER.radius*.65,rounding=CHARACTER.radius-Math.sqrt(CHARACTER.radius**2-offset**2);
     for(const [dx,dz]of [[offset,0],[-offset,0],[0,offset],[0,-offset]]) {
-      const sample=this.environment.surface(x+dx,z+dz);if(!sample)return null;
+      const sample=this.environment.surface(x+dx,z+dz,this.feet[1]);if(!sample)return null;
       height=Math.max(height,sample.height-rounding);
     }
     for(const collider of colliders)if(collider.kind==='rock'&&collider.top>height&&Math.hypot(x-collider.x,z-collider.z)<collider.radius+CHARACTER.radius) {

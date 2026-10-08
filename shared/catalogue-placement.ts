@@ -23,7 +23,7 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
   const d=objectDefinition(r.definitionId),hit=scene.raycast(r.eye,r.direction),p=hit?.point??r.eye;
   const floorHit=hit?.solid?.object&&objectDefinition(hit.solid.object.definitionId).family==='floor';
   if(!['floor','roof','furniture','attachment'].includes(d.family)&&!(d.family==='fixture'&&floorHit)&&!(d.wall&&floorHit))return null;
-  const object:BuildObject={id:r.requestId,definitionId:r.definitionId,variant:r.variant,position:[p[0],scene.terrain(p[0],p[2]).height,p[2]],rotation:r.rotation%(Math.PI*2),normal:[0,1,0],support:{kind:'terrain'}};
+  const object:BuildObject={id:r.requestId,definitionId:r.definitionId,variant:r.variant,position:[p[0],scene.groundSurface(p[0],p[2],p[1]).height,p[2]],rotation:r.rotation%(Math.PI*2),normal:[0,1,0],support:{kind:'terrain'}};
   const fail=(code:string,reason:string):Placement=>({object,valid:false,code,reason});if(!hit)return fail('reach','Look at a surface within 10 meters');
   let anchor:BuildSolid|undefined;
   if(d.attachment){
@@ -72,11 +72,11 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
       // Sample the 2m canonical vertices that can interpolate into the footprint.
       // A floor cannot become a bridge, nor excavate more than forty centimetres.
       const c=Math.cos(object.rotation),s=Math.sin(object.rotation),heights:number[]=[];
-      for(let x=Math.floor((object.position[0]-5)/2)*2;x<=object.position[0]+5;x+=2)for(let z=Math.floor((object.position[2]-5)/2)*2;z<=object.position[2]+5;z+=2){const dx=x-object.position[0],dz=z-object.position[2];if(Math.abs(dx*c-dz*s)<=4.5&&Math.abs(dx*s+dz*c)<=4.5)heights.push(scene.world.height(x,z));}
-      const maximum=Math.max(...heights);if(!anchor)object.position[1]=Math.max(scene.terrain(p[0],p[2]).height-.1,maximum-.38);
+      for(let x=Math.floor((object.position[0]-5)/2)*2;x<=object.position[0]+5;x+=2)for(let z=Math.floor((object.position[2]-5)/2)*2;z<=object.position[2]+5;z+=2){const dx=x-object.position[0],dz=z-object.position[2];if(Math.abs(dx*c-dz*s)<=4.5&&Math.abs(dx*s+dz*c)<=4.5){const base=scene.terrain(x,z).height,ground=scene.groundSurface(x,z,object.position[1]).height;heights.push(ground<base-.001?ground:scene.world.height(x,z));}}
+      const maximum=Math.max(...heights);if(!anchor)object.position[1]=Math.max(scene.groundSurface(p[0],p[2],p[1]).height-.1,maximum-.38);
       if(maximum-object.position[1]>.385)return fail('ground','This floor needs more than 0.4 m of excavation');
       const samples=footprint(d.slab.width,d.slab.depth,object);
-      if(samples.some(q=>scene.terrain(q[0],q[2]).height<object.position[1]-.32))return fail('support','The floor would leave too much unsupported ground');
+      if(samples.some(q=>scene.groundSurface(q[0],q[2],object.position[1]).height<object.position[1]-.32))return fail('support','The floor would leave too much unsupported ground');
     }
   }else if(d.wall&&floorHit){
     anchor=hit.solid!;const parent=anchor.object!,slab=objectDefinition(parent.definitionId).slab!,dx=p[0]-parent.position[0],dz=p[2]-parent.position[2],c=Math.cos(parent.rotation),s=Math.sin(parent.rotation),x=dx*c-dz*s,z=dx*s+dz*c;
@@ -85,13 +85,13 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
   }else{
     if(hit.solid){anchor=hit.solid;const pd=anchor.object&&objectDefinition(anchor.object.definitionId);if(!pd||!pd.slab)return fail('support','Furniture needs ground or a floor');object.position[1]=anchor.collider.top;object.support={kind:pd.family as 'floor'|'roof',id:anchor.id,socket:'top'};}
     const boxes=d.boxes,extent=boxes?Math.max(...boxes.map(b=>Math.hypot(b.center[0],b.center[2])+Math.hypot(b.size[0],b.size[2])/2)):d.fixture?.radius??.5;
-    const heights=footprint(extent*2,extent*2,object).map(q=>scene.terrain(q[0],q[2]).height);
+    const heights=footprint(extent*2,extent*2,object).map(q=>scene.groundSurface(q[0],q[2],object.position[1]).height);
     if(!anchor){if(Math.max(...heights)-Math.min(...heights)>.24)return fail('ground','Furniture needs reasonably level ground');object.position[1]=Math.max(...heights)-.02;}
     else if(footprint(extent*2,extent*2,object).some(q=>!containsSlab(anchor!,q[0],q[2])))return fail('support','Keep the whole object on the floor');
   }
   for(const q of footprint(d.slab?.width??d.wall?.width??.3,d.slab?.depth??d.wall?.depth??.3,object)){
     const water=scene.world.surfaceWater(q[0],q[2]);if(water&&object.position[1]<water.level+.05)return fail('water','Build above the water');
-    if(d.family!=='floor'&&scene.terrain(q[0],q[2]).height>object.position[1]+.18)return fail('ground','The object would be buried too deeply');
+    if(d.family!=='floor'&&scene.groundSurface(q[0],q[2],object.position[1]).height>object.position[1]+.18)return fail('ground','The object would be buried too deeply');
   }
   return finishPlacement(scene,r,object,anchor);
 }
