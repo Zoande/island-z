@@ -1,4 +1,4 @@
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {objectRegistry,hotbarSlots,objectDefinition,buildProp,type BuildObject,type BuildRequest} from '../shared/object-registry';
 import {BuildScene} from '../shared/build-scene';
 import {solvePlacement,validBuildRequest} from '../shared/build-placement';
@@ -7,6 +7,7 @@ import {Character,CHARACTER,characterInput,idleInput} from '../shared/character'
 import {playerCollider} from '../shared/object-colliders';
 import {rockSurface} from '../shared/rock-collision';
 import {wallGeometry} from '../client/wall-geometry';
+import {BuildingController} from '../client/building';
 import type {WorldGenerator,Prop} from '../shared/world';
 import type {Point3} from '../shared/rocks';
 function scene(height=(x:number,z:number)=>0,props:Prop[]=[],water:((x:number,z:number)=>any)=()=>null) {
@@ -102,6 +103,12 @@ describe('shared authoritative placement',()=>{
     const s=scene((x,z)=>x*.1+z*.2,[{kind:'oak',x:0,y:0,z:2,variant:0,scale:1,rotation:0}]);expect(solvePlacement(s,request()).valid).toBe(false);
     for(const [x,z]of [[-.2,-.8],[63.9,63.9],[64.1,64.1]]){expect(s.terrain(x,z).height).toBeCloseTo(x*.1+z*.2,9);expect(Math.hypot(...s.terrain(x,z).normal)).toBeCloseTo(1);}
   });
+});
+it('does not restore an optimistic child after its parent is rolled back',async()=>{
+  let resolve!:(value:any)=>void;const response=new Promise<any>(r=>resolve=r),parent=wall('parent'),child={...wall('child'),support:{kind:'wall' as const,id:'parent',socket:'center' as const}};
+  const c=Object.create(BuildingController.prototype) as any;c.update=vi.fn();c.destruction={active:false};c.preview={valid:true,object:child};c.request=()=>({requestId:'child'});c.pending=new Map([[parent.id,parent]]);c.pending.set(child.id,child);c.scene={add:vi.fn(),remove:vi.fn()};c.transport={place:vi.fn(()=>response)};c.abort=new AbortController();c.disposed=false;c.confirmed=new Map();c.lastPoll=0;
+  c.place();expect(c.pending.has(child.id)).toBe(true);c.undo(parent.id);expect(c.pending.has(child.id)).toBe(false);resolve({ok:true,object:child,revision:1});await new Promise(r=>setTimeout(r,0));
+  expect(c.confirmed.has(child.id)).toBe(false);expect(c.scene.add).toHaveBeenCalledTimes(1);expect(c.scene.remove).toHaveBeenCalledWith(child.id);
 });
 describe('placed wall movement collisions',()=>{
   it('blocks thin rotated walls at low frame rates, allows sliding, and supports standing on top',()=>{

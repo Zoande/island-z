@@ -24,7 +24,7 @@ export class BuildingController {
   readonly scene:BuildScene;readonly destruction:DestructionController;selected=8;variant=0;rotation=0;preview:Placement|null=null;
   readonly pending=new Map<string,BuildObject>();private confirmed=new Map<string,{object:BuildObject;revision:number}>();
   private cells=new Map<string,Cell>();private worldKey='';private connection='Connecting';private worldChanged=false;
-  private polling=false;private lastPoll=-Infinity;private queue=Promise.resolve();private abort=new AbortController();
+  private polling=false;private lastPoll=-Infinity;private abort=new AbortController();
   private choices=new Map<number,number>();private previewSignature='';private previousLook='';private lastMotion=0;
   private doorBusy=new Set<string>();private interaction:BuildObject|null=null;private interactionSignature='';
   get definitionId(){return catalogueChoices(this.selected)[this.choices.get(this.selected)??0]?.definitionId;}
@@ -93,17 +93,17 @@ export class BuildingController {
     const request=this.request(crypto.randomUUID()),object={...this.preview.object,id:request.requestId};
     request.expected={position:[...object.position],rotation:object.rotation,support:{...object.support}};
     this.pending.set(object.id,object);this.scene.add(object);this.previewSignature='';
-    // Serialize dependent snaps so a stacked/connected wall never outruns its parent.
-    this.queue=this.queue.then(async()=>{
+    // Keep optimistic placement visible while its ordered server command is checked.
+    void (async()=>{
       if(!this.pending.has(object.id)||this.disposed)return;
       try {
-        const result=await this.transport.place(request,AbortSignal.any([this.abort.signal,AbortSignal.timeout(8000)]));if(this.disposed)return;
-        if(!result.ok){this.undo(object.id);this.notify(result.error);return;}
+        const result=await this.transport.place(request,AbortSignal.any([this.abort.signal,AbortSignal.timeout(8000)]));if(this.disposed)return;if(!this.pending.has(object.id)){this.lastPoll=-Infinity;return;}
+        if(!result.ok){this.undo(object.id);this.notify(result.error);this.lastPoll=-Infinity;return;}
         if(!validBuildObject(result.object)||result.object.id!==object.id)throw new Error('Invalid placed object');
         this.pending.delete(object.id);this.confirmed.set(object.id,{object:result.object,revision:result.revision});this.scene.add(result.object);this.previewSignature='';
       }catch{if(this.disposed)return;this.undo(object.id);this.notify('Confirmation lost; refreshing world state');this.connection='Disconnected';}
       this.lastPoll=-Infinity;
-    });
+    })();
   }
   private undo(id:string) {
     const dependent=[...this.pending.values()].filter(o=>o.support.kind!=='terrain'&&o.support.id===id);
@@ -113,7 +113,7 @@ export class BuildingController {
     const object={...original,state:{open:!original.state?.open}},request:DoorRequest={action:'door',requestId:crypto.randomUUID(),worldKey:this.worldKey,objectId:object.id,open:object.state.open,eye:[...this.camera.position]as [number,number,number],direction:this.camera.forward};
     const validation=doorChange(this.scene,request);if(!validation.ok){this.notify(validation.error);return;}
     this.doorBusy.add(object.id);this.pending.set(object.id,object);this.scene.add(object);this.previewSignature='';
-    this.queue=this.queue.then(async()=>{try{const result=await this.transport.door!(request,AbortSignal.any([this.abort.signal,AbortSignal.timeout(8000)]));if(this.disposed)return;if(!result.ok){this.scene.add(original);this.notify(result.error);}else{if(!validBuildObject(result.object))throw new Error('Invalid door state');this.confirmed.set(object.id,{object:result.object,revision:result.revision});this.scene.add(result.object);}}catch{if(!this.disposed){this.scene.add(original);this.notify('Door change could not be confirmed');}}finally{this.pending.delete(object.id);this.doorBusy.delete(object.id);this.previewSignature='';this.lastPoll=-Infinity;}});
+    void (async()=>{try{const result=await this.transport.door!(request,AbortSignal.any([this.abort.signal,AbortSignal.timeout(8000)]));if(this.disposed)return;if(!result.ok){this.scene.add(original);this.notify(result.error);}else{if(!validBuildObject(result.object))throw new Error('Invalid door state');this.confirmed.set(object.id,{object:result.object,revision:result.revision});this.scene.add(result.object);}}catch{if(!this.disposed){this.scene.add(original);this.notify('Door change could not be confirmed');}}finally{this.pending.delete(object.id);this.doorBusy.delete(object.id);this.previewSignature='';this.lastPoll=-Infinity;}})();
   }
   private wantedCells():string[] {
     const [x,,z]=this.camera.position,radius=qualities[this.renderer.quality].trees+BUILD_CELL,keys:string[]=[];
