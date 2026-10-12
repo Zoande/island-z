@@ -1,7 +1,7 @@
 import type {BuildingController} from './building';
 import type {PlayerCamera} from './camera';
 import type {IslandRenderer} from './renderer';
-import {solidCells,recordFor,volumeRay,brushSeed,treeSolidAssets,destructionRule,actionBrush,openingBrush,localPoint,DESTRUCTION,isTree,type SolidRecord,type WorldAction,type WorldPatch,type ActionResult} from '../shared/destruction';
+import {solidCells,recordFor,volumeRay,brushSeed,treeSolidAssets,destructionRule,actionBrush,openingBrush,localPoint,sameSolidVolume,sameSolidSnapshot,DESTRUCTION,isTree,type SolidRecord,type WorldAction,type WorldPatch,type ActionResult} from '../shared/destruction';
 import {SparseVolume,brushRegion,type VolumeMesh} from '../shared/volume';
 import type {Point3} from '../shared/rocks';
 import {buildProp} from '../shared/object-registry';
@@ -30,27 +30,46 @@ export class DestructionController {
     window.addEventListener('keyup',e=>{if(e.code==='KeyR')this.repair=false;},options);
     window.addEventListener('blur',stop,options);document.addEventListener('pointerlockchange',()=>{if(document.pointerLockElement!==camera.canvas)stop();},options);
   }
-  async initialize(){await Promise.all(['oak','birch','palm'].flatMap(kind=>Array.from({length:kind==='palm'?3:6},async(_,i)=>{const key=`${kind}-${i}`;if(treeSolidAssets.has(key))return;const response=await fetch(`/models/${key}-solid.json`);if(!response.ok)throw new Error('Cannot load destructible tree solids');treeSolidAssets.set(key,await response.json());})));this.predictor=new Worker(new URL('./prediction.worker.ts',import.meta.url),{type:'module'});this.predictor.onmessage=e=>{const v=e.data;if(v.error||this.predictions.get(v.record.id)!==v.signature)return;this.building.scene.applyRecord(v.record);this.renderer.predictSolid(v.record,v.regions,v.meshes);};this.worker=new Worker(new URL('./volume.worker.ts',import.meta.url),{type:'module'});this.worker.onmessage=e=>this.complete(e.data);this.worker.onerror=e=>{this.notify('Solid geometry failed: '+e.message);this.workerBusy=false;};}
+  async initialize(){await Promise.all(['oak','birch','palm'].flatMap(kind=>Array.from({length:kind==='palm'?3:6},async(_,i)=>{const key=`${kind}-${i}`;if(treeSolidAssets.has(key))return;const response=await fetch(`/models/${key}-solid.json`);if(!response.ok)throw new Error('Cannot load destructible tree solids');treeSolidAssets.set(key,await response.json());})));this.predictor=new Worker(new URL('./prediction.worker.ts',import.meta.url),{type:'module'});this.predictor.onmessage=e=>{const v=e.data,id=v.record?.id??v.id;if(!id||this.predictions.get(id)!==v.signature)return;if(v.error){this.predictions.delete(id);this.log('prediction-error',{target:id,error:v.error});return;}this.building.scene.applyRecord(v.record);this.renderer.predictSolid(v.record,v.regions,v.meshes);};this.worker=new Worker(new URL('./volume.worker.ts',import.meta.url),{type:'module'});this.worker.onmessage=e=>this.complete(e.data);this.worker.onerror=e=>{this.notify('Solid geometry failed: '+e.message);this.workerBusy=false;this.current=undefined;this.dispatch();};}
   accept(patch:WorldPatch,replace=false){
     if(patch.actionId)this.pending.delete(patch.actionId);
     this.worldRevision=Math.max(this.worldRevision,patch.revision);const scene=this.building.scene;
     for(const floor of patch.leveling??[])scene.keepLeveling(floor);for(const o of patch.openings??[])scene.setOpening(o.id,o.kind);for(const id of patch.removedBuilds??[])scene.remove(id,true);
-    for(const record of patch.solids??[]){const old=this.authoritative.get(record.id);if(old&&record.revision===old.revision&&record.removed===old.removed&&record.opening===old.opening&&JSON.stringify(record.pose)===JSON.stringify(old.pose)&&JSON.stringify(record.fall)===JSON.stringify(old.fall))continue;if(!old||record.revision>=old.revision){const next=old&&record.revision===old.revision?{...record,source:old.source,volume:old.volume}:record;this.authoritative.set(record.id,next);if(old?.pose&&record.pose)this.poses.set(record.id,{from:old,to:record,time:performance.now()});}}
+    for(const record of patch.solids??[]){
+      const old=this.authoritative.get(record.id);
+      const sameVolume=!!old&&sameSolidVolume(record,old);
+      if(old&&sameSolidSnapshot(record,old))continue;
+      if(old&&record.revision<old.revision)continue;
+      const next=old&&record.revision===old.revision
+        ?{...record,source:old.source,volume:sameVolume?old.volume:record.volume}
+        :record;
+      const correctedAtSameRevision=!!old&&record.revision===old.revision&&
+        (!sameVolume||record.opening!==old.opening||record.removed!==old.removed);
+      if(correctedAtSameRevision){
+        this.predictions.delete(record.id);
+        this.generated.delete(record.id);
+        this.generatedVolumes.delete(record.id);
+        this.renderer.reconcileDamagedPrediction(record);
+      }
+      this.authoritative.set(record.id,next);
+      if(old?.pose&&record.pose)this.poses.set(record.id,{from:old,to:record,time:performance.now()});
+    }
     this.rebase();
   }
   private rebase(){const scene=this.building.scene;
     for(const record of this.authoritative.values())if(scene.edits.get(record.id)!==record)scene.applyRecord(record);
     const grouped=new Map<string,typeof this.pending extends Map<any,infer V>?V[]:never>();for(const p of this.pending.values()){const a=grouped.get(p.request.targetId)??[];a.push(p);grouped.set(p.request.targetId,a);}
-    for(const [id,strokes]of grouped){const r=this.authoritative.get(id);if(!r||r.prop.kind==='terrain')continue; // Terrain waits for the accepted mesh/collision pair; no provisional ground underfoot.
-const signature=r.revision+'/'+strokes.map(p=>p.request.requestId).join(',');if(this.predictions.get(id)===signature)continue;this.predictions.set(id,signature);const regions=strokes.filter(p=>p.brush).map(p=>brushRegion(p.brush!));this.renderer.predictSolid(r,regions,[]);this.predictor?.postMessage({record:r,strokes:strokes.map(p=>({action:p.request.action,brush:p.brush})),signature});}
+    for(const [id,strokes]of grouped){const r=this.authoritative.get(id);if(!r||r.prop.kind==='terrain')continue;
+      const signature=r.revision+'/'+strokes.map(p=>p.request.requestId).join(',');if(this.predictions.get(id)===signature)continue;this.predictions.set(id,signature);const regions=strokes.filter(p=>p.brush).map(p=>brushRegion(p.brush!));this.renderer.predictSolid(r,regions,[]);this.predictor?.postMessage({record:r,strokes:strokes.map(p=>({action:p.request.action,brush:p.brush})),signature});}
     for(const id of this.predictions.keys())if(!grouped.has(id))this.predictions.delete(id);
-    for(const r of this.authoritative.values()){if(r.removed){this.renderer.removeDamagedMesh(r.id);this.generated.delete(r.id);this.generatedVolumes.delete(r.id);this.tasks.delete(r.id);continue;}if(this.generated.get(r.id)!==r.revision)this.tasks.set(r.id,r);}
+    for(const [id,r]of this.authoritative)if(!grouped.has(id))this.renderer.reconcileDamagedPrediction(r);
+    for(const r of this.authoritative.values()){if(r.removed){this.renderer.removeDamagedMesh(r.id);this.generated.delete(r.id);this.generatedVolumes.delete(r.id);this.tasks.delete(r.id);continue;}if(this.generated.get(r.id)!==r.revision||this.generatedVolumes.get(r.id)!==r.volume)this.tasks.set(r.id,r);}
     this.dispatch();
   }
   private dispatch(){if(this.workerBusy||!this.worker||!this.tasks.size||this.stopped)return;const p=this.camera.position,priority=new Set([...this.pending.values()].map(a=>a.request.targetId));const first=[...this.tasks].sort((a,b)=>{const score=(e:[string,SolidRecord])=>e[0].startsWith('warm:')?1e12:priority.has(e[0])?-1e12:Math.hypot((e[1].pose?.position[0]??e[1].prop.x)-p[0],(e[1].pose?.position[2]??e[1].prop.z)-p[2]);return score(a)-score(b);})[0];this.tasks.delete(first[0]);const task=destructionRule(first[1].prop)?.mode==='whole'?'boxes':'mesh';this.current={record:first[1],task};this.workerBusy=true;if(!first[0].startsWith('warm:'))this.log('geometry-queued',{target:first[0],revision:first[1].revision,task,bricks:Object.keys(first[1].volume.bricks).length});this.worker.postMessage({id:++this.jobId,task,source:first[1].source,state:first[1].volume,lods:Math.hypot(first[1].prop.x-p[0],first[1].prop.z-p[2])>64,warm:first[0].startsWith('warm:'),templateUrl:isTree(first[1].prop)?`/models/solids/${first[1].prop.kind}-${first[1].prop.variant}.contour.gz`:undefined});}
-  private complete(value:any){if(value.cache)this.workerCache=value.cache;const job=this.current;if(!job||this.stopped)return;if(!job.record.id.startsWith('warm:'))this.log('geometry-complete',{target:job.record.id,revision:job.record.revision,task:job.task,milliseconds:value.milliseconds,error:value.error});this.metric(job.task,value.milliseconds??0);if(value.error){console.error(value.stack??value.error);this.notify('Solid geometry: '+value.error);this.workerBusy=false;this.dispatch();return;}const current=this.building.scene.edits.get(job.record.id);if(!current||current.removed||current.revision<job.record.revision){this.workerBusy=false;this.dispatch();return;}
+  private complete(value:any){if(value.cache)this.workerCache=value.cache;const job=this.current;if(!job||this.stopped)return;if(!job.record.id.startsWith('warm:'))this.log('geometry-complete',{target:job.record.id,revision:job.record.revision,task:job.task,milliseconds:value.milliseconds,error:value.error});this.metric(job.task,value.milliseconds??0);if(value.error){console.error(value.stack??value.error);this.notify('Solid geometry: '+value.error);this.workerBusy=false;this.current=undefined;this.dispatch();return;}const current=this.building.scene.edits.get(job.record.id);if(!current||current.removed||current.revision<job.record.revision){this.workerBusy=false;this.current=undefined;this.dispatch();return;}
     if(current.revision!==job.record.revision||current.volume!==job.record.volume){this.tasks.set(current.id,current);this.workerBusy=false;this.current=undefined;this.dispatch();return;}
-    if(job.task==='mesh'){const meshes=value.result as VolumeMesh[];this.renderer.setDamagedMesh(current,meshes,value.lods??[]);this.meshes.set(current.id,meshes);this.meshLods.set(current.id,value.lods??[]);this.generated.set(current.id,current.revision);this.workerBusy=false;this.current=undefined;this.dispatch();return;}
+    if(job.task==='mesh'){const meshes=value.result as VolumeMesh[];this.renderer.setDamagedMesh(current,meshes,value.lods??[]);this.meshes.set(current.id,meshes);this.meshLods.set(current.id,value.lods??[]);this.generated.set(current.id,current.revision);this.generatedVolumes.set(current.id,current.volume);this.workerBusy=false;this.current=undefined;this.dispatch();return;}
     this.boxes.set(current.id,value.result);this.building.scene.setDamageCollision(current,value.result);this.generated.set(current.id,current.revision);this.generatedVolumes.set(current.id,current.volume);this.workerBusy=false;this.current=undefined;this.dispatch();
   }
   private metric(stage:string,milliseconds:number){const values=this.stages.get(stage)??[];values.push(milliseconds);if(values.length>300)values.shift();this.stages.set(stage,values);this.metrics.push({stage,milliseconds});if(this.metrics.length>300)this.metrics.shift();}

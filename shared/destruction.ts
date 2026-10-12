@@ -18,6 +18,19 @@ export function predictionDigest(record:SolidRecord):string{
   const state=record.volume,text=JSON.stringify([record.revision,record.opening??null,!!record.removed,Object.keys(state.bricks).sort().map(k=>[k,Array.from(state.bricks[k])]),state.clips??[],state.mask?Object.keys(state.mask).sort().map(k=>[k,state.mask![k]]):null]);
   let a=2166136261,b=2246822519;for(let i=0;i<text.length;i++){const c=text.charCodeAt(i);a=Math.imul(a^c,16777619);b=Math.imul(b^c,3266489917);}return (a>>>0).toString(16).padStart(8,'0')+(b>>>0).toString(16).padStart(8,'0');
 }
+/** Compare replicated state without allocating a digest string proportional
+ * to the volume. Same-revision snapshots can correct state after recovery. */
+export function sameSolidVolume(a:SolidRecord,b:SolidRecord):boolean{
+  if(a.volume===b.volume)return true;
+  const x=a.volume,y=b.volume,xk=Object.keys(x.bricks),yk=Object.keys(y.bricks);
+  if(xk.length!==yk.length||JSON.stringify(x.clips??[])!==JSON.stringify(y.clips??[]))return false;
+  for(const key of xk){const p=x.bricks[key],q=y.bricks[key];if(!q||p.length!==q.length)return false;for(let i=0;i<p.length;i++)if(p[i]!==q[i])return false;}
+  const xm=x.mask,ym=y.mask;if(!xm||!ym)return xm===ym;
+  const mk=Object.keys(xm),nk=Object.keys(ym);if(mk.length!==nk.length)return false;
+  for(const key of mk){const p=xm[key],q=ym[key];if(!q||p.length!==q.length)return false;for(let i=0;i<p.length;i++)if(p[i]!==q[i])return false;}
+  return true;
+}
+export function sameSolidSnapshot(a:SolidRecord,b:SolidRecord):boolean{return a.revision===b.revision&&a.opening===b.opening&&!!a.removed===!!b.removed&&sameSolidVolume(a,b)&&JSON.stringify(a.pose)===JSON.stringify(b.pose)&&JSON.stringify(a.fall)===JSON.stringify(b.fall);}
 export function predictionReply(result:ActionResult,hint?:string):ActionReply{
   if(!result.ok||!hint)return result;const p=result.patch,r=p.solids[0];
   if(p.solids.length!==1||p.removedBuilds.length||p.leveling.length||p.openings.length||r.removed||r.fall||predictionDigest(r)!==hint)return result;

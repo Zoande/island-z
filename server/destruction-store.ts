@@ -20,7 +20,7 @@ export class DestructionStore {
   readonly timings:{stage:string;milliseconds:number}[]=[];
   private collisionData=new WeakMap<VolumeState,import('../shared/volume-collision').CollisionBox[]>();
   private receipts=new Map<string,SavedEdit>();private componentCache=new Map<string,{revision:number;components:SolidComponent[]}>();private collisionCache=new Map<string,{revision:number;boxes:import('../shared/volume-collision').CollisionBox[];volume:VolumeState}>();private cadence=new Map<string,number>();private queue=Promise.resolve();private lanes=new Map<string,Promise<unknown>>();private records=0;private stopped=false;private supportRunning?:Promise<void>;private supportRequests=new Map<string,WorldAction>();private geometryVersions=new Map<string,number>();private placementEpoch=0;
-  constructor(readonly builds:BuildStore,readonly persistence:{append:(commit:import('./journal').WorldCommit)=>Promise<void>;loadCells?:(keys:string[],revision:number)=>Promise<SolidRecord[]>;protected?:()=>Point3[];activate?:(apply:()=>void)=>Promise<void>}={append:async()=>{}}){
+  constructor(readonly builds:BuildStore,readonly persistence:{append:(commit:import('./journal').WorldCommit)=>Promise<void>;loadCells?:(keys:string[],revision:number)=>Promise<SolidRecord[]>;protected?:()=>Point3[];activate?:(apply:()=>void)=>Promise<void>}={append:async()=>{}},readonly antiCheatEnabled=true){
     for(const kind of ['oak','birch','palm'])for(let i=0;i<(kind==='palm'?3:6);i++){const key=kind+'-'+i;if(!treeSolidAssets.has(key))treeSolidAssets.set(key,JSON.parse(readFileSync(new URL('../public/models/'+key+'-solid.json',import.meta.url),'utf8')));}
   }
   private activate(apply:()=>void){return this.persistence.activate?this.persistence.activate(apply):Promise.resolve(apply());}
@@ -57,9 +57,9 @@ export class DestructionStore {
   private async perform(value:unknown):Promise<ActionResult>{
     const fail=(code:string,error:string):ActionResult=>({ok:false,code,error});if(!validAction(value))return fail('request','Invalid destruction request');const a=value as WorldAction,placementAtStart=this.placementEpoch;
     if(a.worldKey!==this.builds.worldKey)return fail('world','World changed · refresh the game');const fingerprint=createHash('sha256').update(JSON.stringify(a)).digest('hex'),receipt=this.receipts.get(a.requestId);if(receipt)return receipt.fingerprint===fingerprint?{ok:true,patch:receipt.patch,requestId:a.requestId}:fail('request-id','Action ID was reused');
-    const now=a.actionTime??Date.now();if(now-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
+    const now=a.actionTime??Date.now();if(this.antiCheatEnabled&&now-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
     await this.hydrateNear(a.eye[0],a.eye[2]);const scene=this.builds.scene,hit=scene.raycast(a.eye,a.direction,DESTRUCTION.reach,a.action==='repair',true);if(!hit?.solid||hit.solid.id!==a.targetId)return fail('target','Target moved or is out of reach');
-    const solid=hit.solid,old=scene.edits.get(solid.id);if((old?.revision??0)!==a.targetRevision)return fail('revision','Target changed · aim again');const rule=destructionRule(solid.prop);if(!rule)return fail('target','This object cannot be destroyed');
+    const solid=hit.solid,old=scene.edits.get(solid.id);if(this.antiCheatEnabled&&(old?.revision??0)!==a.targetRevision)return fail('revision','Target changed · aim again');const rule=destructionRule(solid.prop);if(!rule)return fail('target','This object cannot be destroyed');
     if(a.action==='repair'&&(!solid.object||!rule.repairable||old?.fall))return fail('repair','Only surviving built walls, floors, and roofs can be repaired');
     if(a.action==='dismantle'&&rule.mode!=='whole'||a.action==='cut'&&rule.mode==='whole')return fail('mode','Wrong action for this object');
     const patch:WorldPatch={revision:this.revision+1,actionId:a.requestId,solids:[],removedBuilds:[],leveling:[],openings:[]};let record=old??solid.record??recordFor(solid.id,solid.prop,scene.rocks,solid.object);const terrainReads=new Map<string,number>();
@@ -89,8 +89,8 @@ export class DestructionStore {
     await this.cookCollisions(patch.solids);
     const task=this.queue.then(async()=>{
       if([...terrainReads].some(([id,revision])=>(scene.edits.get(id)?.revision??0)!==revision))return fail('revision','Ground changed; aim again');
-      const current=scene.edits.get(a.targetId);if((current?.revision??0)!==a.targetRevision||a.action==='repair'&&placementAtStart!==this.placementEpoch)return fail('revision','Target or its support changed; aim again');
-      const commitNow=a.actionTime??Date.now();if(commitNow-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
+      const current=scene.edits.get(solid.id);if((current?.revision??0)!==(old?.revision??0)||this.antiCheatEnabled&&a.action==='repair'&&placementAtStart!==this.placementEpoch)return fail('revision','Target or its support changed; aim again');
+      const commitNow=a.actionTime??Date.now();if(this.antiCheatEnabled&&commitNow-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
       patch.revision=this.revision+1;const saved:SavedEdit={schema:1,worldKey:this.builds.worldKey,requestId:a.requestId,fingerprint,patch,analysis:a.action!=='repair'&&record.prop.kind!=='terrain'?a:undefined};
       try{await this.persistence.append({kind:'edit',patch,requestId:saved.requestId,fingerprint:saved.fingerprint,analysis:saved.analysis,result:{ok:true,patch,requestId:a.requestId}});}catch{return fail('save','The server could not save this change');}
       this.cadence.set(a.sessionId,commitNow);for(const [id,time]of this.cadence)if(commitNow-time>60000)this.cadence.delete(id);this.remember(saved);await this.activate(()=>this.apply(patch,true));
