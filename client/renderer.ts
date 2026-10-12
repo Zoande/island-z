@@ -1,5 +1,5 @@
 import {capsuleGeometry} from './player-geometry';
-import {naturalId,quaternion,worldPoint,destructionRule,type SolidRecord} from '../shared/destruction';
+import {naturalId,quaternion,worldPoint,destructionRule,sameSolidVolume,type SolidRecord} from '../shared/destruction';
 import {survivingFoliage} from './damaged-foliage';
 import {meshVolumeRegion,mergeVolumeRegions,type VolumeMesh,type VolumeRegion} from '../shared/volume';
 import { mat4 } from 'gl-matrix';
@@ -493,6 +493,9 @@ export class IslandRenderer {
     const milliseconds=performance.now()-start;this.predictionTimings.push({id:record.id,revision:record.revision,milliseconds,meshMs,uploadMs:milliseconds-meshMs,stages,frame:this.frameNumber});if(this.predictionTimings.length>300)this.predictionTimings.shift();return milliseconds;
   }
   private disposeDamage(d:DamageDraw,baseline=true){d.terrainInstance?.destroy();for(const mesh of [d.meshes,...d.lods].flat()){for(const map of [...this.viewBatchGroups,this.shadowBatches]){map.get(mesh)?.buffer.destroy();map.delete(mesh);}if(d.owns&&!mesh.borrowed){mesh.vertex.destroy();mesh.index.destroy();}}d.prediction?.buffer.destroy();if(baseline&&d.prediction?.base)this.disposeDamage(d.prediction.base);}
+  /** Drop a speculative cut as soon as authority rejects it. Matching
+   * predictions stay visible while the accepted full mesh is rebuilt. */
+  reconcileDamagedPrediction(record:SolidRecord){const d=this.damaged.get(record.id);if(!d?.prediction||sameSolidVolume(d.record,record)&&d.record.opening===record.opening&&!!d.record.removed===!!record.removed)return;const base=d.prediction.base;this.disposeDamage(d,false);if(base)this.damaged.set(record.id,base);else this.damaged.delete(record.id);this.damageGeometryRevision++;this.scenerySignature='';}
   setDamagedMesh(record:SolidRecord,geometry:VolumeMesh[],geometryLods:VolumeMesh[][]=[]){
     this.removeDamagedMesh(record.id);const owns=destructionRule(record.prop)?.mode!=='whole';
     const meshes=owns?[...geometry,...survivingFoliage(record,this.treeGeometry.get(`${record.prop.kind}-${record.prop.variant}-lod0`)??[])].map(g=>this.mesh(g)):this.meshes.get(`${record.prop.kind}-${record.prop.variant}-lod0`)??[];
