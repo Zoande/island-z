@@ -12,6 +12,21 @@ export function validInput(value:unknown):value is InputStep {
     [i.x,i.z].every(n=>Number.isFinite(n)&&Math.abs(n)<=1.5)&&
     (i.swimVector===undefined||Array.isArray(i.swimVector)&&i.swimVector.length===3&&i.swimVector.every(n=>Number.isFinite(n)&&Math.abs(n)<=1.5));
 }
+/** Trusted-mode snapshots are still bounded before entering the world runtime. */
+export function validCharacterState(value:unknown):value is CharacterState {
+  const s=value as CharacterState, point=(p:unknown,limit=1e7):p is [number,number,number]=>Array.isArray(p)&&p.length===3&&p.every(n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=limit);
+  const fields=new Set(['feet','velocity','home','grounded','inBush','ready','swimming','underwater','sprinting','accelerating','exhausted','oxygen','oxygenDrainRate','stamina','waterLevel','respawns','swimActive','waterKind','accumulator','jumpHeld','jumpBuffer','coyote']);
+  if(!s||typeof s!=='object'||Object.keys(s).some(k=>!fields.has(k))||!point(s.feet)||!point(s.velocity,100)||
+    !['grounded','inBush','ready','swimming','underwater','sprinting','accelerating','exhausted','swimActive','jumpHeld'].every(k=>typeof (s as any)[k]==='boolean')||
+    !['oxygen','oxygenDrainRate','stamina','accumulator','jumpBuffer','coyote'].every(k=>Number.isFinite((s as any)[k]))||
+    !Number.isSafeInteger(s.respawns)||s.respawns<0||!['ocean','lake','river'].includes(s.waterKind)||
+    !(s.waterLevel===null||Number.isFinite(s.waterLevel))||
+    !(s.home===undefined||point(s.home))||
+    ![s.oxygen,s.oxygenDrainRate,s.stamina,s.accumulator,s.jumpBuffer,s.coyote].every(n=>n>=0)||
+    s.oxygen>3600||s.oxygenDrainRate>100||s.stamina>100||s.accumulator>.1||s.jumpBuffer>1||s.coyote>1||
+    !Number.isFinite(s.waterLevel??0)||Math.abs(s.waterLevel??0)>1e7) return false;
+  return true;
+}
 /** Small, versioned binary value codec. Typed distance bricks stay packed on the wire.
  * Decoding has byte, depth and collection limits before allocating containers. */
 export function encodeMessage(value:unknown):Uint8Array {

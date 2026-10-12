@@ -4,11 +4,12 @@ import {WebSocketServer,WebSocket} from 'ws';
 import {GENERATOR_VERSION,parseWorldConfig} from '../shared/config';
 import {encodeMessage,decodeMessage,validCell,PROTOCOL_VERSION} from '../shared/network';
 import {WorldService} from './world-service';
-export function createWorldServer(configuration:unknown,options:{saveDirectory?:string;origins?:string[]}={}){
+export function createWorldServer(configuration:unknown,options:{saveDirectory?:string;origins?:string[];antiCheatEnabled?:boolean}={}){
  const world=Object.freeze({...parseWorldConfig(configuration),generatorVersion:GENERATOR_VERSION});
  const peers=new Map<string,WebSocket>(),connections=new Map<WebSocket,string>(),alive=new Set<WebSocket>();let service:WorldService|undefined;
  const send=(id:string,m:any)=>{const peer=peers.get(id);if(!peer||peer.readyState!==WebSocket.OPEN)return;if(peer.bufferedAmount>256*1024){if(m.type==='players'||m.type==='motion')return;if(peer.bufferedAmount>8*1024*1024){peer.close(1013,'Slow connection; reconnect to resync');return;}}peer.send(encodeMessage(m));};
- const authority=()=>service??=new WorldService(world,options.saveDirectory,send);
+ const antiCheatEnabled=options.antiCheatEnabled??true;
+ const authority=()=>service??=new WorldService(world,options.saveDirectory,send,antiCheatEnabled);
  const allowed=(origin:string|undefined,host:string|undefined)=>{if(!origin)return !options.origins?.length;try{const u=new URL(origin);return options.origins?.length?options.origins.includes(u.origin):u.host===host;}catch{return false;}};
  const server=createServer((req,res)=>{const origin=req.headers.origin;if(!allowed(origin,req.headers.host)){res.writeHead(403);res.end('Origin not allowed');return;}if(origin){res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');}res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','application/json; charset=utf-8');
    const url=new URL(req.url??'/','http://localhost'),path=url.pathname;if(req.method==='OPTIONS'){res.writeHead(204,{'Access-Control-Allow-Methods':'GET, OPTIONS'});res.end();return;}if(req.method!=='GET'){res.writeHead(405,{Allow:'GET'});res.end(JSON.stringify({error:'World commands require a joined WebSocket session'}));return;}
@@ -26,7 +27,7 @@ export function createWorldServer(configuration:unknown,options:{saveDirectory?:
      if(m.type==='ping'){send(id,{type:'pong',sent:m.sent});return;}
      if(!joined&&!busy&&m.type!=='join'){peer.close(1008,'Join first');return;}
      if(m.type==='join'){if(joined||busy){peer.close(1008,'Already joining');return;}busy=true;ordered=ordered.then(async()=>{await authority().request('join',id,m);joined=true;});}
-     else ordered=ordered.then(async()=>{if(m.type==='inputs')await authority().request('inputs',id,m.steps);else if(m.type==='subscribe'){const v=await authority().request('subscribe',id,m);send(id,{type:'subscribed',...v});}else if(m.type==='command')await authority().request('command',id,m);else throw new Error('Unknown message');});
+     else ordered=ordered.then(async()=>{if(m.type==='inputs')await authority().request('inputs',id,{steps:m.steps,state:m.state,stateSeq:m.stateSeq});else if(m.type==='subscribe'){const v=await authority().request('subscribe',id,m);send(id,{type:'subscribed',...v});}else if(m.type==='command')await authority().request('command',id,m);else throw new Error('Unknown message');});
      ordered=ordered.catch(e=>{send(id,{type:'error',error:e.message});peer.close(1008,'Invalid session message');});
    });
    peer.on('close',()=>{peers.delete(id);connections.delete(peer);alive.delete(peer);if(!closing)void ordered.then(()=>service?.request('leave',id)).catch(e=>console.error('Disconnect save:',e));});

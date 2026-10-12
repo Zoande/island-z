@@ -60,6 +60,15 @@ browser origins are rejected. This is an Origin policy, not authentication:
 anyone with the link can join, and a browser's remembered identity is not a
 verified account.
 
+`ANTI_CHEAT_ENABLED` defaults to `true`. Set it to `false` only when the server
+operator trusts every player. That mode accepts bounded player-state snapshots,
+skips server movement simulation and action cadence/stale-revision checks, and
+keeps multiplayer replication. Target selection still uses the normal raycast
+and tool reach. The server still validates action shape and legality and
+computes canonical world geometry before saving it; this flag does not remove
+geometry or persistence work. The service example reads the setting
+from its `EnvironmentFile`; local `npm run server` also reads `.env`.
+
 For systemd, create a dedicated `island-z` user/group, make the checkout readable
 by that user, copy [the environment example](../deploy/island-z.env.example) to
 `/etc/island-z.env`, and edit its paths/domain. Copy
