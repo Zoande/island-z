@@ -2,7 +2,8 @@
 
 > Historical review of the starting code. The agreed implementation supersedes
 > its migration/testing proposals: the test save was deleted, WebSocket was
-> selected, and current live verification is limited to one client. See
+> selected, and the original live verification covered one client. Current
+> smoke coverage adds a protocol peer but does not render a second viewer. See
 > [the implementation record](multiplayer-implementation-plan.md).
 
 Reviewed 6 October 2026, against commit `dd9f94c`.
@@ -173,5 +174,6 @@ Track server tick p50/p95/p99 and overruns, input age, snapshot age/rate/loss, c
    shared movement, edits, support and durability belong on the Pi.
 6. Measure large-tree support and full-volume transfer costs on the Pi before
    adding incremental connectivity or dirty-brick replication.
-7. Verify deployment with one client only at this stage. Multi-player presentation,
-   crowd contact and capacity remain unvalidated until later testing is authorized.
+7. Verify deployment with one rendered client. A protocol peer checks shared
+   movement and edits; multi-viewer rendering, crowd contact and capacity remain
+   unvalidated.

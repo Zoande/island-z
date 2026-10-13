@@ -59,6 +59,13 @@ the ocean. Exhaustion prevents sprinting and makes swimmers sink despite holding
 Space, so long open-ocean swims can end in drowning. Idle sinking is intentionally
 slower than diving. Vitals use elapsed time even if collision terrain is loading.
 Player movement and vitals are server-authoritative; no fall damage is added.
+The server reads `ANTI_CHEAT_ENABLED` from its process environment or a local
+`.env` file. It defaults to `true`; set it to `false` only on a server where you
+trust every player. Trust mode relays bounded client movement snapshots and
+skips server movement simulation and action cadence/stale-revision checks.
+The server still checks action shape and legality, builds canonical geometry,
+and persists edits and placements. The server still raycasts the declared target
+within normal tool reach, so geometry and target-selection work remain.
 
 ## Building
 
@@ -374,14 +381,22 @@ In development, `window.__island` exposes player/camera/world/stream/renderer di
 for inspection. It is omitted from production builds. Browser visual and GPU
 checks also use the Playwright profiler above. Inspect beaches, forests, ridges, steep rock placement, and
 quality changes, and check the console for rendering errors.
-Run `npm run check:multiplayer` for the current isolated single-client Chrome
-check: joining, movement, placement, cutting, and remembered reload. Reports and
-screenshots go under `artifacts`. The retained building/daylight/catalogue and
+Run `npm run check:multiplayer` for the isolated Chrome and protocol-peer
+multiplayer check: joining, live player movement, shared placement and cutting,
+and remembered reload. The peer verifies the build and destruction records it
+receives from the browser client. Reports and screenshots go under `artifacts`.
+The retained building/daylight/catalogue and
 destruction/prediction browser command names delegate to this smoke harness;
 their former larger scenarios are not current verification. Swimming, catalogue,
 daylight and support rules remain covered by unit tests. Older direct-camera
-teleport helpers do not move the authoritative player. No live two-player or
-ten-player test is run.
+teleport helpers do not move the authoritative player. The protocol peer does
+not render a second Chrome viewer, and this check does not measure crowd capacity.
+
+`npm run check:network-worker` tests the actual browser network worker without
+WebGPU, including a delayed region load and a controlled reconnect. The unit
+suite also exercises two WebSocket clients in both server modes, shared edits,
+and recovery after a server restart. See [network validation](docs/network-validation.md)
+for checks and the software-GPU limitation of the rendered harness.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 

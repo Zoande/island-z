@@ -103,9 +103,9 @@ npm run profile -- voxel-depth depth-compare
 ```
 
 The current `check:destruction` and `check:prediction` entry points delegate to
-the single-client multiplayer smoke harness. It covers join, movement, building,
-cutting, and reload using isolated saves; it does not claim the older delayed
+the multiplayer smoke harness. It covers a Chrome client and protocol peer
+joining, movement, shared building, cutting, and reload using isolated saves; it does not claim the older delayed
 response/tree/repair browser scenarios. Unit suites cover repair, connectivity,
 stale motion, transaction failure and recovery. See
 [the implementation record](multiplayer-implementation-plan.md) for evidence and
-limits. No live two-player/ten-player validation is performed.
+limits. Two rendered viewers and ten-player capacity remain unvalidated.

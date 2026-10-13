@@ -126,6 +126,6 @@ the preview buffers along with ordinary GPU resources.
 `npm test` covers placement, collision, support, retry and transaction rules.
 `npm run build` checks TypeScript, client bundles and Pages asset sizes.
 `npm run build:server` builds the production Node workers.
-`npm run check:multiplayer` checks one Chrome client against an isolated server.
-The old building/catalogue browser entry points delegate to that smoke harness;
+`npm run check:multiplayer` checks one Chrome client and a protocol peer against
+an isolated server. The old building/catalogue browser entry points delegate to that smoke harness;
 they do not claim their previous multi-scenario coverage.
