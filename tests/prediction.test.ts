@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {predictionDigest,predictionReply,sameSolidVolume,sameSolidSnapshot,recordFor,actionBrush,brushSeed,volumeRay,type WorldAction,type ActionResult} from '../shared/destruction';
+import {predictionDigest,predictionReply,sameSolidVolume,sameSolidSnapshot,needsSolidGeometry,recordFor,actionBrush,brushSeed,volumeRay,type WorldAction,type ActionResult} from '../shared/destruction';
 import {SparseVolume} from '../shared/volume';
 import {BuildStore} from '../server/build-store';
 import {solvePlacement} from '../shared/build-placement';
@@ -14,10 +14,12 @@ it('uses canonical prediction hints and returns corrections for differences and 
   expect(predictionDigest(r)).toBe(predictionDigest(reordered));
   expect(sameSolidVolume(r,reordered)).toBe(true);
   expect(sameSolidSnapshot(r,reordered)).toBe(true);
+  expect(needsSolidGeometry({...reordered,volume:r.volume},r.revision,r.volume)).toBe(false);
   const corrected={...r,volume:{...r.volume,bricks:{...r.volume.bricks,'2:0:0':new Int16Array([5])}}};
   expect(corrected.revision).toBe(r.revision);
   expect(sameSolidVolume(r,corrected)).toBe(false);
   expect(sameSolidSnapshot(r,corrected)).toBe(false);
+  expect(needsSolidGeometry(corrected,r.revision,r.volume)).toBe(true);
   const result:ActionResult={ok:true,requestId:'action-one',patch:{revision:5,solids:[r],removedBuilds:[],leveling:[],openings:[]}};
   expect(predictionReply(result,predictionDigest(r))).toHaveProperty('ack.targetId','wall');
   expect(predictionReply(result,predictionDigest({...r,revision:1}))).toBe(result);

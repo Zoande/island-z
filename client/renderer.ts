@@ -476,20 +476,21 @@ export class IslandRenderer {
       boundaries,shadowBoundaries:tree?settings.treeLod.slice(settings.shadowLodOffset,2):boundaries,meshes:Array.from({length:tree?3:boundaries.length+1},(_,i)=>this.meshes.get(`${stem}-lod${i}`)!)};
     this.propRenderInfo.set(prop,info);return info;
   }
-  /** Visible local geometry is committed synchronously, before the action is
-   * sent. Baseline skins are clipped only inside these small surface regions. */
-  predictSolid(record:SolidRecord,additional:VolumeRegion[]=[],geometry?:VolumeMesh[]){
+  /** Commit locally generated preview geometry without waiting for authority.
+   * Keep the current draw while replacement geometry is still being computed. */
+  predictSolid(record:SolidRecord,additional:VolumeRegion[]=[],geometry?:VolumeMesh[],deferred=false){
+    if(deferred)return;
     const previous=this.damaged.get(record.id);if(!additional.length&&!previous?.prediction)return;
-    const regions=mergeVolumeRegions([...(previous?.prediction?.regions??[]),...additional]),signature=JSON.stringify([record.revision,regions,geometry?.length]);if(previous?.prediction?.signature===signature){previous.record=record;return;}
+    const regions=mergeVolumeRegions(additional),signature=JSON.stringify([record.revision,regions,geometry?.length]);if(previous?.prediction?.signature===signature){previous.record=record;return;}
     const start=performance.now(),base=previous?.prediction?previous.prediction.base:previous;
     const stages:number[]=[],patchGeometry=geometry??regions.flatMap(region=>meshVolumeRegion(record.source,record.volume,region,stages));
     const meshMs=performance.now()-start;
     const values=new Float32Array(regions.length*8);regions.forEach((r,i)=>{values.set([...r[0],i===0?regions.length:0,...r[1],0],i*8);});
     const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Immediate cut regions'),clipGroup=this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]});
     const intact=this.meshes.get(`${record.prop.kind}${record.prop.aperture?'-'+record.prop.aperture:''}-${record.prop.variant}-lod0`)??[];
-    const skin=(base?.meshes??intact).map(mesh=>({...mesh,borrowed:true,clipGroup:mesh.material.includes('foliage')||mesh.material==='coconut'?undefined:clipGroup}));
+    const skin=(base?.meshes??intact).map(mesh=>({...mesh,borrowed:true,clipGroup:!patchGeometry.length||mesh.material.includes('foliage')||mesh.material==='coconut'?undefined:clipGroup}));
     if(previous?.prediction)this.disposeDamage(previous,false);
-    this.damaged.set(record.id,{record,owns:true,meshes:[...skin,...patchGeometry.map(m=>this.mesh(m))],lods:[],prediction:{base,regions,signature,buffer}});this.damageGeometryRevision++;this.scenerySignature='';
+    this.damaged.set(record.id,{record,owns:true,meshes:[...skin,...patchGeometry.map(m=>this.mesh(m))],lods:[],terrainInstance:record.prop.kind==='terrain'&&patchGeometry.length?this.device.createBuffer({label:'Predicted terrain transform',size:32,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST}):undefined,prediction:{base,regions,signature,buffer}});this.damageGeometryRevision++;this.scenerySignature='';
     const milliseconds=performance.now()-start;this.predictionTimings.push({id:record.id,revision:record.revision,milliseconds,meshMs,uploadMs:milliseconds-meshMs,stages,frame:this.frameNumber});if(this.predictionTimings.length>300)this.predictionTimings.shift();return milliseconds;
   }
   private disposeDamage(d:DamageDraw,baseline=true){d.terrainInstance?.destroy();for(const mesh of [d.meshes,...d.lods].flat()){for(const map of [...this.viewBatchGroups,this.shadowBatches]){map.get(mesh)?.buffer.destroy();map.delete(mesh);}if(d.owns&&!mesh.borrowed){mesh.vertex.destroy();mesh.index.destroy();}}d.prediction?.buffer.destroy();if(baseline&&d.prediction?.base)this.disposeDamage(d.prediction.base);}
@@ -721,7 +722,7 @@ export class IslandRenderer {
       const key=String(this.damageGeometryRevision);if(chunk.mining?.signature===key)continue;
       const e=BASE_CHUNK*2**chunk.data.level,regions=mines.filter(d=>{const p=d.record.prop;return p.x+1>=chunk.data.x&&p.x<=chunk.data.x+e&&p.z+1>=chunk.data.z&&p.z<=chunk.data.z+e;});
       chunk.mining?.buffer.destroy();chunk.mining=undefined;
-      if(regions.length){const values=new Float32Array(regions.length*8);regions.forEach((d,i)=>{const p=d.record.prop;values.set([p.x,p.y,p.z,i===0?regions.length:0,p.x+1,p.y+1,p.z+1,0],i*8);});const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Mined terrain cells');chunk.mining={signature:key,buffer,group:this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]})};}
+      if(regions.length){const boxes=regions.flatMap(d=>{const p=d.record.prop,local=d.prediction?.regions;return local?.length?local.map(r=>[[p.x+r[0][0],p.y+r[0][1],p.z+r[0][2]],[p.x+r[1][0],p.y+r[1][1],p.z+r[1][2]]] as const):[[[p.x,p.y,p.z],[p.x+1,p.y+1,p.z+1]] as const];}).filter(([a,b])=>b[0]>=chunk.data.x&&a[0]<=chunk.data.x+e&&b[2]>=chunk.data.z&&a[2]<=chunk.data.z+e);const values=new Float32Array(boxes.length*8);boxes.forEach((box,i)=>{values.set([...box[0],i===0?boxes.length:0,...box[1],0],i*8);});if(boxes.length){const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Mined terrain cells');chunk.mining={signature:key,buffer,group:this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]})};}}
     }
     const draw = (pass: GPURenderPassEncoder, mesh: Mesh, instances: GPUBuffer, count = 1,mode?:'shade'|'equal'|'depth'|'shadow') => {
       const material = this.materials.get(mesh.material); if (!material) throw new Error(`Unknown model material ${mesh.material}`);

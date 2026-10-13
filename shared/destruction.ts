@@ -31,6 +31,7 @@ export function sameSolidVolume(a:SolidRecord,b:SolidRecord):boolean{
   return true;
 }
 export function sameSolidSnapshot(a:SolidRecord,b:SolidRecord):boolean{return a.revision===b.revision&&a.opening===b.opening&&!!a.removed===!!b.removed&&sameSolidVolume(a,b)&&JSON.stringify(a.pose)===JSON.stringify(b.pose)&&JSON.stringify(a.fall)===JSON.stringify(b.fall);}
+export function needsSolidGeometry(record:SolidRecord,generatedRevision:number|undefined,generatedVolume:SolidRecord['volume']|undefined):boolean{return generatedRevision!==record.revision||generatedVolume!==record.volume;}
 export function predictionReply(result:ActionResult,hint?:string):ActionReply{
   if(!result.ok||!hint)return result;const p=result.patch,r=p.solids[0];
   if(p.solids.length!==1||p.removedBuilds.length||p.leveling.length||p.openings.length||r.removed||r.fall||predictionDigest(r)!==hint)return result;
