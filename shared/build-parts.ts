@@ -1,6 +1,7 @@
 import type {Prop} from './world';
 import {objectRegistry,type ObjectBox} from './object-registry';
 import type {CharacterCollider} from './character';
+import {orientation,rotate} from './placement';
 /** Actual opening dimensions are shared by geometry, ray casts and collision. */
 export const OPENINGS={door:{width:1.16,bottom:0,height:2.32},window:{width:1.3,bottom:1.05,height:1.05}};
 export function objectBoxes(prop:Prop):readonly ObjectBox[]|undefined {
@@ -19,6 +20,9 @@ export function objectBoxes(prop:Prop):readonly ObjectBox[]|undefined {
   return definition.boxes;
 }
 export function boxColliders(prop:Prop):CharacterCollider[]|undefined {
+  const definition=objectRegistry.get(prop.kind),slab=definition?.slab;
+  if(definition?.family==='floor'&&slab){const q=orientation(prop.normal??[0,1,0],prop.rotation),normal=rotate([0,1,0],q),xAxis=rotate([1,0,0],q),zAxis=rotate([0,0,1],q),offset=rotate([0,slab.height*prop.scale,0],q),point:[number,number,number]=[prop.x+offset[0],prop.y+offset[1],prop.z+offset[2]],center:[number,number,number]=[prop.x+offset[0]/2,prop.y+offset[1]/2,prop.z+offset[2]/2],vertical=(Math.abs(normal[1])*slab.height+Math.abs(xAxis[1])*slab.width+Math.abs(zAxis[1])*slab.depth)*prop.scale/2,yaw=Math.atan2(-xAxis[2],xAxis[0]),u:[number,number]=[Math.cos(yaw),-Math.sin(yaw)],v:[number,number]=[Math.sin(yaw),Math.cos(yaw)],halfWidth=(Math.abs(u[0]*xAxis[0]+u[1]*xAxis[2])*slab.width+Math.abs(u[0]*zAxis[0]+u[1]*zAxis[2])*slab.depth)*prop.scale/2,halfDepth=(Math.abs(v[0]*xAxis[0]+v[1]*xAxis[2])*slab.width+Math.abs(v[0]*zAxis[0]+v[1]*zAxis[2])*slab.depth)*prop.scale/2;
+    return [{kind:'wall',x:center[0],z:center[2],bottom:center[1]-vertical,top:center[1]+vertical,radius:Math.hypot(halfWidth,halfDepth),wall:{yaw,halfWidth,halfDepth},floorPlane:{normal,point,xAxis,zAxis,halfWidth:slab.width*prop.scale/2,halfDepth:slab.depth*prop.scale/2,thickness:slab.height*prop.scale}}];}
   const boxes=objectBoxes(prop);if(!boxes)return;
   const c=Math.cos(prop.rotation),s=Math.sin(prop.rotation);
   return boxes.map(b=>({kind:'wall',x:prop.x+(b.center[0]*c+b.center[2]*s)*prop.scale,z:prop.z+(-b.center[0]*s+b.center[2]*c)*prop.scale,

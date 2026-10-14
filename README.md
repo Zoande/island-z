@@ -58,24 +58,45 @@ allows about nine minutes of continuous lake swimming or nearly five minutes in
 the ocean. Exhaustion prevents sprinting and makes swimmers sink despite holding
 Space, so long open-ocean swims can end in drowning. Idle sinking is intentionally
 slower than diving. Vitals use elapsed time even if collision terrain is loading.
-Player movement and vitals are server-authoritative; no fall damage is added.
+Player movement and vitals are server-authoritative. Falls and drowning damage
+individual body regions; zero head or chest HP returns the player to shore.
+During an outage, strict mode retains up to two seconds of input history and
+replays it from the server's last acknowledged checkpoint after reconnect. The
+server checks the sequence, elapsed-time budget, current collisions, player
+contacts, and vitals before accepting the resulting position. A stale or invalid
+resume returns the latest saved server position. Trust mode keeps its existing
+client-snapshot behavior.
+The server reads `ANTI_CHEAT_ENABLED` from its process environment or a local
+`.env` file. It defaults to `true`; set it to `false` only on a server where you
+trust every player. Trust mode relays bounded client movement snapshots and
+skips server movement simulation and action cadence/stale-revision checks.
+Health, bleeding, oxygen, stamina, and fall damage remain server-owned in both
+modes. The server still checks action shape and legality, builds canonical
+geometry, and persists edits and placements. It raycasts declared targets
+within normal tool reach.
 
 ## Building
 
-The bottom-center hotbar has nine slots. **Q / E** cycles backward/forward within
-the selected group. Reselecting a slot preserves its current choice.
+The bottom-center hotbar has nine inventory slots. **1–9** selects a slot; select
+an empty slot or a resource stack to use your hands. **E** opens the 29-slot
+inventory, with nine hotbar slots and a twenty-slot pack, plus a separate
+left-hand offhand slot. Click a stack and a destination to move, merge, or swap
+items. Most stacks hold up to 100; crutches stack to one.
 
-| Slot | Catalogue group |
-| --- | --- |
-| 1 | Rocks: twelve shapes in two sizes |
-| 2 | Trees: oak, birch and palm variants |
-| 3 | Walls: timber, stone, solid logs and brick |
-| 4 | Floors: timber and stone |
-| 5 | Roofs: timber and stone |
-| 6 | Lighting: ground torch, wall torch and campfire |
-| 7 | Furniture: bed, table and chair |
-| 8 | Attachments: timber door, braced door and window |
-| 9 | Empty hands; hide the preview |
+Successful mining collects **wood, dirt, sand, and stone**. Hand crafting makes
+walls, floors, torches, a **crafting desk**, crutches, and bandages. Aim at a placed desk and press
+**E** to access expanded recipes for roofs, furniture, doors, windows, and more.
+Building consumes a crafted item. Player inventories are private and persisted;
+injuries affect movement, building, and tool use, while bandages stop bleeding.
+Inventory and health updates persist together; retries cannot consume a bandage
+twice. See [inventory and crafting](docs/inventory-and-crafting.md)
+for controls and the multiplayer transaction model.
+
+The body HUD shows six regions. Open inventory to inspect injuries and apply
+bandages. Tap **C** to crouch or stand; hold **C** to crawl, or stand directly
+from crawling. Injury-forced crawling cannot be overridden, and crutches prevent
+crouching. See [health, healing, and posture](docs/health.md) for damage thresholds,
+recovery rules, and client-only head injury effects.
 
 Mouse wheel rotates precisely (one
 degree per typical wheel notch); **T** turns 90 degrees; **left click** places.
@@ -374,14 +395,22 @@ In development, `window.__island` exposes player/camera/world/stream/renderer di
 for inspection. It is omitted from production builds. Browser visual and GPU
 checks also use the Playwright profiler above. Inspect beaches, forests, ridges, steep rock placement, and
 quality changes, and check the console for rendering errors.
-Run `npm run check:multiplayer` for the current isolated single-client Chrome
-check: joining, movement, placement, cutting, and remembered reload. Reports and
-screenshots go under `artifacts`. The retained building/daylight/catalogue and
+Run `npm run check:multiplayer` for the isolated Chrome and protocol-peer
+multiplayer check: joining, live player movement, shared placement and cutting,
+and remembered reload. The peer verifies the build and destruction records it
+receives from the browser client. Reports and screenshots go under `artifacts`.
+The retained building/daylight/catalogue and
 destruction/prediction browser command names delegate to this smoke harness;
 their former larger scenarios are not current verification. Swimming, catalogue,
 daylight and support rules remain covered by unit tests. Older direct-camera
-teleport helpers do not move the authoritative player. No live two-player or
-ten-player test is run.
+teleport helpers do not move the authoritative player. The protocol peer does
+not render a second Chrome viewer, and this check does not measure crowd capacity.
+
+`npm run check:network-worker` tests the actual browser network worker without
+WebGPU, including a delayed region load and a controlled reconnect. The unit
+suite also exercises two WebSocket clients in both server modes, shared edits,
+and recovery after a server restart. See [network validation](docs/network-validation.md)
+for checks and the software-GPU limitation of the rendered harness.
 
 Optional developer checks (Python packages `Pillow` and `wgpu`):
 
@@ -404,6 +433,7 @@ builds; T rotates the building preview. Real holes affect collision and shadows.
 Cuts, mining, removals, floor grading, openings, and fallen tree pieces are saved.
 Ground mining supports pits and tunnels. A thin surface layer follows the local
 terrain; exposed mountain interiors are stone regardless of altitude. Mining
-creates no inventory drops. See [mining](docs/mining.md) for scope and architecture.
+collects resources directly into inventory when there is room; no pickup drops
+are spawned. See [mining](docs/mining.md) for scope and architecture.
 See [destruction foundations and checks](docs/destruction.md) for architecture,
 controls, preparation assets, synchronization, and diagnostics.

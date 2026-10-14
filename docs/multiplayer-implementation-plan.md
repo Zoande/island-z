@@ -21,8 +21,8 @@ and the [Pages/Pi deployment guide](deployment.md).
   Use free infrastructure. Budgeting is outside this work.
 - Delete the old test save. No migration, legacy save loader, or old transport
   compatibility.
-- At most one live client for current testing. Ten is a later testing target,
-  not an admission cap or capacity claim. No live two-player/ten-player tests.
+- The original test scope was single client. Current smoke coverage uses one
+  rendered Chrome client and a second protocol client; it makes no crowd-capacity claim.
 
 ## Responsibility and execution
 
@@ -207,16 +207,26 @@ decoding, partial snapshot ordering, archive reload, atomic aperture/save failur
 journal truncation/checkpoints, paused vitals, slow support, native thin gaps,
 and delayed motion writes.
 
-`npm run check:multiplayer` owns an isolated server/save and one Chrome page. It
-checks joining, real movement input, placement, cutting, and reload. The retained
+`npm run check:multiplayer` owns an isolated server/save, one Chrome page, and a
+second protocol client. It checks joining, remote movement interpolation, shared
+placement and cutting records, and reload. The retained
 building/destruction/prediction/daylight/catalogue browser commands currently
 delegate to this common smoke check. Their former broad browser scenarios are
-not claimed as current coverage; existing gameplay unit suites remain.
+not claimed as current coverage; existing gameplay unit suites remain. The
+protocol client does not render a second Chrome viewer, so two-viewer WebGPU
+behavior and crowd capacity remain unvalidated.
 
-The Pi, actual Tunnel/domain, ARM runtime, impaired networks, multi-player visual
-contacts, crowds, and ten-player capacity have not been locally validated. Do
-not run live two-player/ten-player tests without a new request. There is no
-ten-player admission cap. `?netdebug=1` exposes RTT/snapshot/correction figures;
+`npm run check:network-worker` exercises the real browser worker without WebGPU,
+including a 1.2-second region-response delay and a controlled socket outage.
+Two-client WebSocket tests cover movement, shared builds and cuts, restart
+recovery, and receipt replay in both authoritative and trusted server modes.
+The rendered harness could not complete in the cloud software-GPU environment
+because Chromium lost its graphics device; rendered gameplay validation is not
+claimed for this run.
+
+The Pi, actual Tunnel/domain, ARM runtime, real WAN conditions, multi-player visual
+contacts in two rendered viewers, crowds, and ten-player capacity have not been
+locally validated. There is no ten-player admission cap. `?netdebug=1` exposes RTT/snapshot/correction figures;
 server diagnostics expose tick and geometry-stage timings.
 
 Remaining tradeoffs include full object-volume events/player snapshots, coarse

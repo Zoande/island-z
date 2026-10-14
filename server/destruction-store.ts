@@ -37,13 +37,13 @@ export class DestructionStore {
 
   private measure(stage:string,start:number){this.timings.push({stage,milliseconds:performance.now()-start});if(this.timings.length>300)this.timings.shift();}
   snapshot(keys:string[]){const wanted=new Set(keys),scene=this.builds.scene;const result={revision:this.revision,solids:[...scene.edits.values()].filter(r=>solidCells(r).some(k=>wanted.has(k))),leveling:[...scene.leveling.values()].filter(o=>wanted.has(buildCell(o.position[0],o.position[2]))),openings:[...scene.openings].filter(([id])=>{const r=scene.placed.get(id);return r&&wanted.has(buildCell(r.prop.x,r.prop.z));}).map(([id,kind])=>({id,kind})),removedBuilds:[]};this.pruneResident();return result;}
-  action(value:unknown):Promise<ActionResult>{const key=(value as any)?.targetId??'invalid',previous=this.lanes.get(key)??Promise.resolve();const task=previous.catch(()=>{}).then(async()=>{const start=performance.now();try{return await this.perform(value);}finally{this.measure('acknowledgement',start);}});this.lanes.set(key,task);void task.finally(()=>{if(this.lanes.get(key)===task)this.lanes.delete(key);}).catch(()=>{});return task;}
-  place(value:unknown):Promise<import('../shared/object-registry').BuildResult>{const task=this.queue.then(async()=>{
+  action(value:unknown,inventoryFor?: (record:SolidRecord,point:Point3)=>import('./journal').WorldCommit['inventory']):Promise<ActionResult>{const key=(value as any)?.targetId??'invalid',previous=this.lanes.get(key)??Promise.resolve();const task=previous.catch(()=>{}).then(async()=>{const start=performance.now();try{return await this.perform(value,inventoryFor);}finally{this.measure('acknowledgement',start);}});this.lanes.set(key,task);void task.finally(()=>{if(this.lanes.get(key)===task)this.lanes.delete(key);}).catch(()=>{});return task;}
+  place(value:unknown,inventory?:import('./journal').WorldCommit['inventory']):Promise<import('../shared/object-registry').BuildResult>{const task=this.queue.then(async()=>{
     const input=value as any;if(Array.isArray(input?.eye))await this.hydrateNear(input.eye[0],input.eye[2]);
     await this.prepareCollisions([...this.builds.scene.edits.values()].filter(r=>{const p=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z];return !r.removed&&Math.hypot(p[0]-(input.eye?.[0]??0),p[2]-(input.eye?.[2]??0))<40;}));
     const prepared=this.builds.prepare(value),result=prepared.result;if(!result.ok||!prepared.fresh)return result;
     const patch=this.placementPatch(result.object);patch.objects=[result.object];await this.cookCollisions(patch.solids);
-    try{await this.persistence.append({kind:'build',object:result.object,patch,requestId:input.requestId,fingerprint:prepared.fingerprint,result});}catch{return {ok:false,code:'save',error:'The server could not save this placement'}as const;}
+    try{await this.persistence.append({kind:'build',object:result.object,patch,inventory,requestId:input.requestId,fingerprint:prepared.fingerprint,result});}catch{return {ok:false,code:'save',error:'The server could not save this placement'}as const;}
     await this.activate(()=>{this.builds.accept(result.object);this.builds.remember(input.requestId,prepared.fingerprint!,result);this.placementEpoch++;this.apply(patch);});return result;
   });this.queue=task.then(()=>{},()=>{});return task;}
   integratePlacement(object:BuildObject):Promise<void>{const task=this.queue.then(async()=>{const patch=this.placementPatch(object);if(!patch.solids.length)return;await this.persistence.append({kind:'edit',patch});await this.activate(()=>this.apply(patch));});this.queue=task.then(()=>{},()=>{});return task;}
@@ -54,7 +54,7 @@ export class DestructionStore {
     const v=new SparseVolume(old.source,old.volume);if(!v.edit(openingBrush(old,kind as 'door'|'window')))return patch;
     patch.solids.push({...old,volume:v.state,opening:kind as 'door'|'window',revision:old.revision+1});patch.openings.push({id:parent.id,kind:kind as 'door'|'window'});return patch;
   }
-  private async perform(value:unknown):Promise<ActionResult>{
+  private async perform(value:unknown,inventoryFor?:(record:SolidRecord,point:Point3)=>import('./journal').WorldCommit['inventory']):Promise<ActionResult>{
     const fail=(code:string,error:string):ActionResult=>({ok:false,code,error});if(!validAction(value))return fail('request','Invalid destruction request');const a=value as WorldAction,placementAtStart=this.placementEpoch;
     if(a.worldKey!==this.builds.worldKey)return fail('world','World changed · refresh the game');const fingerprint=createHash('sha256').update(JSON.stringify(a)).digest('hex'),receipt=this.receipts.get(a.requestId);if(receipt)return receipt.fingerprint===fingerprint?{ok:true,patch:receipt.patch,requestId:a.requestId}:fail('request-id','Action ID was reused');
     const now=a.actionTime??Date.now();if(this.antiCheatEnabled&&now-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
@@ -65,6 +65,7 @@ export class DestructionStore {
     const patch:WorldPatch={revision:this.revision+1,actionId:a.requestId,solids:[],removedBuilds:[],leveling:[],openings:[]};let record=old??solid.record??recordFor(solid.id,solid.prop,scene.rocks,solid.object);const terrainReads=new Map<string,number>();
     if(a.action==='dismantle'){
       record={...record,removed:true,revision:record.revision+1};patch.solids.push(record);patch.removedBuilds.push(record.id);
+      if(solid.object&&objectDefinition(solid.object.definitionId).family==='floor')patch.removedLeveling=[solid.object.id];
       const o=solid.object;if(o?.support.kind==='wall'&&['door','window'].includes(objectDefinition(o.definitionId).attachment??'')){patch.openings.push({id:o.support.id,kind:objectDefinition(o.definitionId).attachment as 'door'|'window'});const parent=scene.placed.get(o.support.id);if(parent){let r=scene.edits.get(parent.id)??recordFor(parent.id,parent.prop,scene.rocks,parent.object),v=new SparseVolume(r.source,r.volume);v.edit(openingBrush(r,objectDefinition(o.definitionId).attachment as 'door'|'window'));patch.solids.push({...r,opening:objectDefinition(o.definitionId).attachment as 'door'|'window',volume:v.state,revision:r.revision+1});}}
     }else if(record.prop.kind==='terrain'){
       const brush=actionBrush(record,hit.point,a.direction,false,brushSeed(a.requestId));
@@ -84,7 +85,6 @@ export class DestructionStore {
       if(a.action==='repair'&&record.opening&&!scene.placed.query(record.prop.x,record.prop.z,3).some(s=>s.object?.support.kind==='wall'&&s.object.support.id===record.id&&['door','window'].includes(objectDefinition(s.object.definitionId).attachment??''))){const opening=openingBrush(record,record.opening),box=opening.box!;let missing=false;for(let y=opening.center[1]-box[1]+.05;y<opening.center[1]+box[1]&&!missing;y+=.05)for(let x=-box[0]+.05;x<box[0]&&!missing;x+=.05)for(let z=-box[2]/2+.025;z<box[2]/2;z+=.025)if(volume.distance([x,y,z])>0){missing=true;break;}if(!missing){record={...record,opening:undefined};patch.openings.push({id:record.id,kind:null});}}
       patch.solids.push(record);
     }
-    if(record.object&&objectDefinition(record.object.definitionId).family==='floor')patch.leveling.push(record.object);
     if(a.action==='repair'){const start=performance.now();try{await this.support(patch,a);}catch(error){if(error instanceof Error&&error.message==='unsupported-repair')return fail('support','Repair from an edge connected to supported material');throw error;}this.measure('support',start);}
     await this.cookCollisions(patch.solids);
     const task=this.queue.then(async()=>{
@@ -92,7 +92,8 @@ export class DestructionStore {
       const current=scene.edits.get(solid.id);if((current?.revision??0)!==(old?.revision??0)||this.antiCheatEnabled&&a.action==='repair'&&placementAtStart!==this.placementEpoch)return fail('revision','Target or its support changed; aim again');
       const commitNow=a.actionTime??Date.now();if(this.antiCheatEnabled&&commitNow-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
       patch.revision=this.revision+1;const saved:SavedEdit={schema:1,worldKey:this.builds.worldKey,requestId:a.requestId,fingerprint,patch,analysis:a.action!=='repair'&&record.prop.kind!=='terrain'?a:undefined};
-      try{await this.persistence.append({kind:'edit',patch,requestId:saved.requestId,fingerprint:saved.fingerprint,analysis:saved.analysis,result:{ok:true,patch,requestId:a.requestId}});}catch{return fail('save','The server could not save this change');}
+      const inventory=a.action==='repair'?undefined:inventoryFor?.(record,hit.point);
+      try{await this.persistence.append({kind:'edit',patch,inventory,requestId:saved.requestId,fingerprint:saved.fingerprint,analysis:saved.analysis,result:{ok:true,patch,requestId:a.requestId}});}catch{return fail('save','The server could not save this change');}
       this.cadence.set(a.sessionId,commitNow);for(const [id,time]of this.cadence)if(commitNow-time>60000)this.cadence.delete(id);this.remember(saved);await this.activate(()=>this.apply(patch,true));
       if(a.action!=='repair'&&record.prop.kind!=='terrain'){this.supportRequests.set(a.targetId,a);setImmediate(()=>this.startSupport());}this.records++;return {ok:true,patch,requestId:a.requestId}as ActionResult;
     });this.queue=task.then(()=>{},()=>{});return task;
@@ -143,8 +144,7 @@ export class DestructionStore {
     for(const [id,group]of grouped){const falling=group.filter(n=>!n.ground);if(!falling.length)continue;if(group.length===1&&group[0].record.fall)continue;const r=group[0].record,kept=group.filter(n=>n.ground);
       if(a.action==='repair'&&id===changed.id)throw new Error('unsupported-repair');
       const index=patch.solids.findIndex(s=>s.id===id),root={...r,removed:!kept.length,revision:r.revision+(id===changed.id?0:1),volume:{...r.volume,mask:kept.length?mergeMasks(kept.map(n=>n.component?.mask).filter(Boolean)as Record<string,number[]>[]):r.volume.mask}};
-      if(index>=0)patch.solids[index]=root;else patch.solids.push(root);if(root.removed)patch.removedBuilds.push(id);
-      if(r.object&&objectDefinition(r.object.definitionId).family==='floor')patch.leveling.push(r.object);
+      if(index>=0)patch.solids[index]=root;else patch.solids.push(root);if(root.removed){patch.removedBuilds.push(id);if(r.object&&objectDefinition(r.object.definitionId).family==='floor'){patch.removedLeveling??=[];patch.removedLeveling.push(id);}}
       for(let i=0;i<falling.length;i++){const n=falling[i],extent=n.bounds[1].map((v,k)=>v-n.bounds[0][k]);if(isTree(r.prop)&&Math.max(...extent)<.75)continue;const fragmentId=`fragment:${createHash('sha256').update(a.requestId+id+':'+i).digest('hex').slice(0,32)}`;parents?.set(fragmentId,id);patch.solids.push({...r,id:fragmentId,object:undefined,opening:undefined,fragmentOf:r.fragmentOf??id,fragmentBounds:n.component?.bounds??r.source.bounds,revision:1,volume:n.component?{...r.volume,mask:n.component.mask}:r.volume,fall:{velocity:r.fall?.velocity??[0,0,0],angular:r.fall?.angular??(isTree(r.prop)?[.15,0,.12]:[0,0,0]),started:Date.now(),persistent:isTree(r.prop),split:r.fall?.split}});}
     }
   }

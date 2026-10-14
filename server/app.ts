@@ -19,11 +19,11 @@ export function createWorldServer(configuration:unknown,options:{saveDirectory?:
      void authority().request('baseline',session,{cells,generation}).then(v=>{const bytes=encodeMessage(v);if(bytes.length>32*1024*1024)throw new Error('Region too large');res.setHeader('Content-Type','application/octet-stream');res.end(bytes);}).catch(()=>{res.writeHead(409);res.end(JSON.stringify({error:'Region load obsolete; retry'}));});return;}
    res.writeHead(404);res.end(JSON.stringify({error:'Not found'}));
  });
- const sockets=new WebSocketServer({noServer:true,maxPayload:32768});
+ const sockets=new WebSocketServer({noServer:true,maxPayload:65536});
  server.on('upgrade',(req,socket,head)=>{if(!allowed(req.headers.origin,req.headers.host)||new URL(req.url??'/','http://localhost').pathname!=='/api/events'){socket.destroy();return;}sockets.handleUpgrade(req,socket,head,peer=>sockets.emit('connection',peer));});
  sockets.on('connection',peer=>{const id=randomUUID();peers.set(id,peer);connections.set(peer,id);alive.add(peer);send(id,{type:'hello',connection:id,version:PROTOCOL_VERSION});let joined=false,busy=false,windowStart=Date.now(),messages=0,bytes=0;let ordered=Promise.resolve();
    peer.on('pong',()=>alive.add(peer));peer.on('message',(data,binary)=>{if(Date.now()-windowStart>1000){windowStart=Date.now();messages=0;bytes=0;}if(++messages>120||(bytes+=(data instanceof ArrayBuffer?data.byteLength:Array.isArray(data)?data.reduce((n,b)=>n+b.length,0):data.length))>128*1024||!binary){peer.close(1008,'Message limit or format');return;}
-     let m:any;try{m=decodeMessage(new Uint8Array(data as Buffer),32768);if(!m||typeof m!=='object'||Array.isArray(m)||typeof m.type!=='string')throw new Error('Invalid envelope');}catch{peer.close(1008,'Invalid binary message');return;}
+     let m:any;try{m=decodeMessage(new Uint8Array(data as Buffer),65536);if(!m||typeof m!=='object'||Array.isArray(m)||typeof m.type!=='string')throw new Error('Invalid envelope');}catch{peer.close(1008,'Invalid binary message');return;}
      if(m.type==='ping'){send(id,{type:'pong',sent:m.sent});return;}
      if(!joined&&!busy&&m.type!=='join'){peer.close(1008,'Join first');return;}
      if(m.type==='join'){if(joined||busy){peer.close(1008,'Already joining');return;}busy=true;ordered=ordered.then(async()=>{await authority().request('join',id,m);joined=true;});}

@@ -11,9 +11,10 @@ export function validBuildRequest(value:unknown):value is BuildRequest {
   const r=value as BuildRequest;if(!r||typeof r.requestId!=='string'||!/^[a-zA-Z0-9-]{8,80}$/.test(r.requestId))return false;
   const definition=objectRegistry.get(r.definitionId),vec=(v:unknown)=>Array.isArray(v)&&v.length===3&&v.every(n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<1e9);
   return !!definition&&Number.isInteger(r.variant)&&!!definition.variants[r.variant]&&Number.isFinite(r.rotation)&&Math.abs(r.rotation)<1e6
+    &&(r.tilt===undefined||definition.family==='floor'&&Number.isFinite(r.tilt)&&Math.abs(r.tilt)<=Math.PI/6+1e-8)
     &&vec(r.eye)&&vec(r.direction)&&vec(r.feet)&&Math.abs(Math.hypot(...r.direction)-1)<.01&&typeof r.standing==='boolean'
     &&Math.hypot(r.eye[0]-r.feet[0],r.eye[2]-r.feet[2])<.05&&Math.abs(r.eye[1]-r.feet[1]-CHARACTER.eyeHeight)<.15
-    &&(r.expected===undefined||!!r.expected&&vec(r.expected.position)&&Number.isFinite(r.expected.rotation)&&!!r.expected.support);
+    &&(r.expected===undefined||!!r.expected&&vec(r.expected.position)&&Number.isFinite(r.expected.rotation)&&!!r.expected.support&&(r.expected.normal===undefined||vec(r.expected.normal)&&Math.abs(Math.hypot(...r.expected.normal)-1)<.001));
 }
 function socketPoint(solid:BuildSolid,socket:SnapSocket):Point3 {
   const w=objectDefinition(solid.object!.definitionId).wall!,p=solid.object!.position,yaw=solid.object!.rotation;
@@ -107,7 +108,7 @@ export function solvePlacement(scene:BuildScene,request:BuildRequest):Placement 
   }
   if(request.expected) {
     const e=request.expected,rotationDifference=Math.atan2(Math.sin(e.rotation-object.rotation),Math.cos(e.rotation-object.rotation));
-    if(Math.hypot(...object.position.map((v,i)=>v-e.position[i]))>.035||Math.abs(rotationDifference)>.001||JSON.stringify(e.support)!==JSON.stringify(object.support))return fail('changed','The placement changed; aim again');
+    if(Math.hypot(...object.position.map((v,i)=>v-e.position[i]))>.035||Math.abs(rotationDifference)>.001||e.normal&&Math.hypot(...object.normal.map((v,i)=>v-e.normal![i]))>.001||JSON.stringify(e.support)!==JSON.stringify(object.support))return fail('changed','The placement changed; aim again');
   }
   return {object,valid:true,code:'ok',reason:object.support.kind==='wall'?object.support.socket==='top'?'Stacked · aligned to the wall below':'Snapped · rotate around the joint':object.support.kind==='rock'?'Supported by rock':'Ready to place'};
 }

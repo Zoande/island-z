@@ -1,0 +1,7 @@
+# Multiplayer network validation
+
+Run `npm run check:multiplayer` to start a local server, load the rendered Chromium client, connect a protocol peer, and check movement, building, mining, and reload persistence. The harness also injects a 1.2 second region baseline delay and exercises reconnect restoration. It requires working WebGPU; Chromium in software-rendering environments may lose its graphics device and stop before the rendered movement assertion completes.
+
+Run `npm run check:network-worker` to test the real multiplayer worker on a blank page without WebGPU. It delays the first baseline while inputs and server acknowledgements continue, verifies the worker against a protocol peer, then drops the worker socket while holding movement. The test checks local movement during the two-second grace, no continued prediction after the grace, and bounded offline movement replayed by the server from its retained authoritative checkpoint.
+
+During a socket outage, the worker simulates locally for at most two seconds and retains the unacknowledged and newly generated inputs. A one-use token binds that history to the same identity, world, and server epoch. The server limits replay by the elapsed disconnect time and simulates each step through the current collision and player-contact environment; the next welcome carries the corrected authoritative state and sequence acknowledgement. Stale, invalid, or unavailable resume data falls back to the saved server checkpoint. Trust mode does not use offline replay.

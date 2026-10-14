@@ -47,9 +47,9 @@ export class GpuProfiler {
   private queries:GPUQuerySet;private resolve:GPUBuffer;private readbacks:Readback[];private active?:Readback;private id?:number;
   private disposed=false;
   constructor(private device:GPUDevice,private profiler:FrameProfiler) {
-    this.queries=device.createQuerySet({type:'timestamp',count:12});
+    this.queries=device.createQuerySet({type:'timestamp',count:14});
     this.resolve=device.createBuffer({size:256,usage:GPUBufferUsage.QUERY_RESOLVE|GPUBufferUsage.COPY_SRC});
-    this.readbacks=Array.from({length:3},()=>({buffer:device.createBuffer({size:96,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ}),busy:false}));
+    this.readbacks=Array.from({length:3},()=>({buffer:device.createBuffer({size:112,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ}),busy:false}));
   }
   begin(frame:number) {
     this.active=undefined;this.id=undefined;
@@ -57,20 +57,20 @@ export class GpuProfiler {
     const slot=this.readbacks.find(r=>!r.busy);if(!slot||this.profiler.frameId===undefined)return;
     slot.busy=true;this.active=slot;this.id=this.profiler.frameId;
   }
-  pass(index:number):GPURenderPassTimestampWrites|undefined {
+  pass(index:number):(GPURenderPassTimestampWrites&GPUComputePassTimestampWrites)|undefined {
     return this.active?{querySet:this.queries,beginningOfPassWriteIndex:index*2,endOfPassWriteIndex:index*2+1}:undefined;
   }
   get sampling() {return !!this.active;}
   resolveInto(encoder:GPUCommandEncoder) {
     if(!this.active)return;
-    encoder.resolveQuerySet(this.queries,0,12,this.resolve,0);encoder.copyBufferToBuffer(this.resolve,0,this.active.buffer,0,96);
+    encoder.resolveQuerySet(this.queries,0,14,this.resolve,0);encoder.copyBufferToBuffer(this.resolve,0,this.active.buffer,0,112);
   }
   submitted() {
     const slot=this.active,id=this.id;if(!slot||id===undefined)return;
     this.active=undefined;
     void slot.buffer.mapAsync(GPUMapMode.READ).then(()=>{
       if(this.disposed)return;
-      const times=new BigUint64Array(slot.buffer.getMappedRange()),names=['staticShadow','movingShadow','terrain','scenery','water','post'];
+      const times=new BigUint64Array(slot.buffer.getMappedRange()),names=['staticShadow','movingShadow','terrain','scenery','water','post','gpuScenery'];
       const result:Record<string,number>={};names.forEach((name,i)=>result[name]=Number(times[i*2+1]-times[i*2])/1e6);
       result.total=Object.values(result).reduce((a,b)=>a+b,0);slot.buffer.unmap();slot.busy=false;this.profiler.gpu(id,result);
     }).catch(()=>{slot.busy=false;});

@@ -32,7 +32,9 @@ bushes disappear where their supporting surface has been removed. Mining
 waits for accepted geometry rather than predicting terrain removal ahead of
 the server's collision state. Existing object destruction retains prediction.
 
-This first version adds no ore, drops, inventory, tools, or crafting. Terrain
+Mining now grants dirt, sand, or stone directly to the player inventory after a
+successful edit; no pickup drops or ore are added. See
+[inventory and crafting](inventory-and-crafting.md). Terrain
 does not collapse, and mining does not automatically destabilize existing
 trees or buildings. Water keeps its existing surface rules rather than flowing
 through excavations. Falling debris still uses its existing coarse ground

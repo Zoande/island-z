@@ -2,7 +2,15 @@ import type {Prop} from './world';
 import type {Point3} from './rocks';
 
 export const OBJECT_SCHEMA_VERSION=1;
-export type BuiltKind='wall-wood'|'wall-stone'|'wall-log'|'wall-brick'|'floor-wood'|'floor-stone'|'roof-wood'|'roof-stone'|'torch'|'torch-wall'|'campfire'|'bed'|'table'|'chair'|'door-wood'|'door-reinforced'|'window';
+export type BuiltKind='wall-wood'|'wall-stone'|'wall-log'|'wall-brick'|'floor-wood'|'floor-stone'|'roof-wood'|'roof-stone'|'torch'|'torch-wall'|'campfire'|'bed'|'table'|'crafting-desk'|'chair'|'door-wood'|'door-reinforced'|'window';
+/** Inventory-only items are not world objects and cannot be placed as props. */
+export interface InventoryItemDefinition {readonly id:'crutches'|'bandage';readonly label:string;readonly icon:string;readonly stackLimit:number;readonly offhand:boolean}
+const inventoryItemDefinitions:readonly InventoryItemDefinition[]=Object.freeze([
+  Object.freeze({id:'crutches',label:'Crutches',icon:'crutches',stackLimit:1,offhand:true}),
+  Object.freeze({id:'bandage',label:'Bandage',icon:'bandage',stackLimit:100,offhand:false}),
+]);
+export const inventoryItems:ReadonlyMap<string,InventoryItemDefinition>=new Map(inventoryItemDefinitions.map(item=>[item.id,item]));
+export function inventoryItem(id:string):InventoryItemDefinition|undefined{return inventoryItems.get(id);}
 export interface ObjectBox {center:Point3;size:Point3}
 export interface ObjectVariant {kind:Prop['kind'];model:number;scale:number}
 export interface ObjectDefinition {
@@ -34,15 +42,23 @@ definitions.push(
   {id:'campfire',label:'Campfire',family:'fixture',icon:'fire',variants:one('campfire'),fixture:{radius:.68,height:.35},asset:'blender',light:{height:.55,radius:15,color:[1,.37,.08],power:90}},
   {id:'bed',label:'Bed',family:'furniture',icon:'bed',variants:one('bed'),boxes:[{center:[0,.37,0],size:[1.3,.74,2.1]},{center:[0,.68,-1],size:[1.35,1.36,.13]}],asset:'blender'},
   {id:'table',label:'Table',family:'furniture',icon:'table',variants:one('table'),boxes:[{center:[0,.76,0],size:[1.6,.12,.85]},...[-.65,.65].flatMap(x=>[-.30,.30].map(z=>({center:[x,.36,z]as Point3,size:[.13,.72,.13]as Point3})))],asset:'blender'},
+  {id:'crafting-desk',label:'Crafting desk',family:'furniture',icon:'table',variants:one('crafting-desk'),material:'wall-wood',boxes:[
+    {center:[0,.92,0],size:[1.65,.14,.9]},
+    ...[-.70,.70].flatMap(x=>[-.34,.34].map(z=>({center:[x,.45,z]as Point3,size:[.14,.9,.14]as Point3}))),
+    {center:[0,.27,-.34],size:[1.28,.10,.10]},{center:[0,.27,.34],size:[1.28,.10,.10]},
+    {center:[-.64,.27,0],size:[.10,.10,.58]},{center:[.64,.27,0],size:[.10,.10,.58]},
+    {center:[0,1.20,-.38],size:[1.38,.50,.08]},
+    {center:[0,.84,.49],size:[.34,.18,.16]},
+  ]},
   {id:'chair',label:'Chair',family:'furniture',icon:'chair',variants:one('chair'),boxes:[{center:[0,.23,0],size:[.54,.46,.54]},{center:[0,.68,-.24],size:[.56,.5,.10]}],asset:'blender'},
   ...(['door-wood','door-reinforced']as const).map(id=>({id,label:id==='door-wood'?'Timber door':'Braced door',family:'attachment' as const,icon:'door',variants:one(id),attachment:'door' as const,boxes:[{center:[0,1.14,0]as Point3,size:[1.10,2.28,.08]as Point3}],asset:'blender' as const})),
   {id:'window',label:'Window',family:'attachment',icon:'window',variants:one('window'),attachment:'window',supportSamples:[[-.65,.2,0],[-.65,.8,0],[.65,.2,0],[.65,.8,0],[0,0,0],[0,1.05,0]],boxes:[{center:[-.60,.525,0],size:[.10,1.05,.14]},{center:[.60,.525,0],size:[.10,1.05,.14]},{center:[0,.05,0],size:[1.3,.10,.14]},{center:[0,1,0],size:[1.3,.10,.14]},{center:[0,.525,0],size:[.045,.95,.07]}],asset:'blender'},
 );
-for(const d of definitions){const voxel=['rock','tree','wall','floor','roof'].includes(d.family);Object.assign(d,{destruction:{mode:voxel?'voxel':'whole',hardness:d.family==='rock'||d.id.includes('stone')?2.5:d.id.includes('brick')?2:1,repairable:['wall','floor','roof'].includes(d.family),tree:d.family==='tree'}});}
+for(const d of definitions){const voxel=['rock','tree','wall','roof'].includes(d.family);Object.assign(d,{destruction:{mode:voxel?'voxel':'whole',hardness:d.family==='rock'||d.id.includes('stone')?2.5:d.id.includes('brick')?2:1,repairable:['wall','roof'].includes(d.family),tree:d.family==='tree'}});}
 /** Stable save/network IDs. New object types register dimensions, assets and rules here. */
 export const objectRegistry:ReadonlyMap<string,ObjectDefinition>=new Map(definitions.map(definition=>[definition.id,Object.freeze({...definition,variants:Object.freeze(definition.variants.map(v=>Object.freeze(v))),wall:definition.wall&&Object.freeze(definition.wall),slab:definition.slab&&Object.freeze(definition.slab),boxes:definition.boxes&&Object.freeze(definition.boxes.map(b=>Object.freeze({center:Object.freeze(b.center)as unknown as Point3,size:Object.freeze(b.size)as unknown as Point3}))),fixture:definition.fixture&&Object.freeze(definition.fixture),light:definition.light&&Object.freeze({...definition.light,color:Object.freeze(definition.light.color),offset:definition.light.offset&&Object.freeze(definition.light.offset)})})]));
 export const hotbarSlots:readonly(readonly string[]|null)[]=Object.freeze([
-  ['rock'],['tree'],['wall-wood','wall-stone','wall-log','wall-brick'],['floor-wood','floor-stone'],['roof-wood','roof-stone'],['torch','torch-wall','campfire'],['bed','table','chair'],['door-wood','door-reinforced','window'],null,
+  ['rock'],['tree'],['wall-wood','wall-stone','wall-log','wall-brick'],['floor-wood','floor-stone'],['roof-wood','roof-stone'],['torch','torch-wall','campfire'],['bed','table','crafting-desk','chair'],['door-wood','door-reinforced','window'],null,
 ].map(group=>group&&Object.freeze(group)));
 export function catalogueChoices(slot:number):{definitionId:string;variant:number}[]{return (hotbarSlots[slot]??[]).flatMap(definitionId=>objectDefinition(definitionId).variants.map((_,variant)=>({definitionId,variant})));}
 export function objectDefinition(id:string):ObjectDefinition {const definition=objectRegistry.get(id);if(!definition)throw new Error(`Unknown object type: ${id}`);return definition;}
@@ -56,7 +72,9 @@ export interface BuildRequest {
   worldKey?:string;
   requestId:string;definitionId:string;variant:number;rotation:number;
   eye:Point3;direction:Point3;feet:Point3;standing:boolean;
-  expected?:{position:Point3;rotation:number;support:BuildSupport};
+  /** Additional tilt around the deterministic placement axis; floor-only, radians. */
+  tilt?:number;
+  expected?:{position:Point3;rotation:number;support:BuildSupport;normal?:Point3};
 }
 export type BuildResult={ok:true;object:BuildObject;revision:number}|{ok:false;error:string;code:string};
 export const BUILD_REACH=10,BUILD_CELL=512,SNAP_DISTANCE=.8;
@@ -74,6 +92,7 @@ export function validBuildObject(value:unknown):value is BuildObject {
   const vector=(v:unknown)=>Array.isArray(v)&&v.length===3&&v.every(n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<1e9);
   return !!definition&&Number.isInteger(o.variant)&&!!definition.variants[o.variant]&&vector(o.position)&&vector(o.normal)
     &&Math.abs(Math.hypot(...o.normal)-1)<.001&&Number.isFinite(o.rotation)&&!!o.support
+    &&(definition.family!=='floor'||o.normal[1]>=.5)
     &&(o.state===undefined||!!o.state&&typeof o.state.open==='boolean'&&definition.attachment==='door')
     &&(o.support.kind==='terrain'||o.support.kind==='rock'&&typeof o.support.id==='string'||['wall','floor','roof'].includes(o.support.kind)&&'id'in o.support&&typeof o.support.id==='string'&&'socket'in o.support&&['left','right','top','front','back','opening','mount'].includes(o.support.socket));
 }

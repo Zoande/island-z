@@ -7,6 +7,7 @@ import {Character,CHARACTER,characterInput,idleInput} from '../shared/character'
 import {playerCollider} from '../shared/object-colliders';
 import {rockSurface} from '../shared/rock-collision';
 import {wallGeometry} from '../client/wall-geometry';
+import {orientation,rotate} from '../shared/placement';
 import {BuildingController} from '../client/building';
 import type {WorldGenerator,Prop} from '../shared/world';
 import type {Point3} from '../shared/rocks';
@@ -102,6 +103,32 @@ describe('shared authoritative placement',()=>{
   it('does not place through a blocking trunk and samples exact global terrain triangles',()=>{
     const s=scene((x,z)=>x*.1+z*.2,[{kind:'oak',x:0,y:0,z:2,variant:0,scale:1,rotation:0}]);expect(solvePlacement(s,request()).valid).toBe(false);
     for(const [x,z]of [[-.2,-.8],[63.9,63.9],[64.1,64.1]]){expect(s.terrain(x,z).height).toBeCloseTo(x*.1+z*.2,9);expect(Math.hypot(...s.terrain(x,z).normal)).toBeCloseTo(1);}
+  });
+  it('places tilted floors on slopes, saves the normal, and uses it for rendered and collision geometry',()=>{
+    const s=scene((x)=>x*.1),r=request('tilted-floor','floor-wood',[0,0,0],[0,0,6]);r.tilt=Math.PI/36;
+    const p=solvePlacement(s,r);expect(validBuildRequest(r)).toBe(true);expect(p.valid).toBe(true);expect(p.object.normal[0]).toBeLessThan(-.09);expect(p.object.normal[1]).toBeGreaterThan(.8);
+    expect(validBuildRequest({...r,tilt:Math.PI/6+.01})).toBe(false);expect(validBuildRequest({...r,tilt:NaN})).toBe(false);
+    const prop=buildProp(p.object),up=rotate([0,1,0],orientation(prop.normal!,prop.rotation));expect(up).toEqual(expect.arrayContaining(p.object.normal.map(v=>expect.closeTo(v,6))));
+    const solid=s.solid(prop,p.object.id,p.object);expect(solid.collider.kind).toBe('floor');expect(solid.shapes[0].kind).toBe('hull');
+    const points=(solid.shapes[0] as Extract<ConvexShape,{kind:'hull'}>).points;expect(Math.max(...points.map(v=>v[1]))-Math.min(...points.map(v=>v[1]))).toBeGreaterThan(.7);
+    expect(objectDefinition('floor-wood').destruction?.mode).toBe('whole');
+    const plane=solid.collider.floorPlane!,feetY=plane.point[1]-(plane.normal[0]*(.35-plane.point[0]))/plane.normal[1],character=new Character({surface:()=>({height:0,normal:[0,1,0]}),colliders:()=>[solid.collider]});character.spawn(.35,feetY,0);character.update(.1,idleInput);expect(character.grounded).toBe(true);expect(character.feet[1]).toBeCloseTo(feetY,2);
+    const flat=s.solid(buildProp({...p.object,normal:[0,1,0],position:[0,-.1,0]}),'underside').collider,below=new Character({surface:()=>({height:-10,normal:[0,1,0]}),colliders:()=>[flat]});below.spawn(0,-2.2,0);for(let i=0;i<24;i++)below.update(1/60,characterInput(new Set(i===0?['Space']:[]),0));expect(below.feet[1]).toBeLessThanOrEqual(-2.15);
+  });
+  it('chains floors to neighboring floors and wall tops while keeping floor edges aligned',()=>{
+    const s=scene(),parent:BuildObject={id:'floor-parent',definitionId:'floor-wood',variant:0,position:[0,-.1,0],rotation:.3,normal:[0,1,0],support:{kind:'terrain'}};s.add(parent);
+    const edge:[number,number,number]=[1.5*Math.cos(.3),-.1,-1.5*Math.sin(.3)],p=solvePlacement(s,request('floor-next','floor-stone',edge,[edge[0],0,6],.3));
+    expect(p.valid).toBe(true);expect(p.object.support).toEqual({kind:'floor',id:parent.id,socket:'right'});expect(Math.hypot(p.object.position[0]-2.9,p.object.position[2]+.89)).toBeLessThan(.15);
+    const w=scene();w.add(wall('floor-wall'));const stacked=solvePlacement(w,request('floor-on-wall','floor-wood',[0,2.4,0],[0,0,6]));
+    expect(stacked.valid).toBe(true);expect(stacked.object.support).toEqual({kind:'wall',id:'floor-wall',socket:'top'});expect(stacked.object.position[1]).toBeCloseTo(2.4);
+  });
+  it('blocks movement into elevated floor sides, keeps clear space below, and uses exact tilted slab bounds',()=>{
+    const traverse=(height:number,normal:Point3)=>{const s=scene(),floor:BuildObject={id:`raised-${height}`,definitionId:'floor-wood',variant:0,position:[0,height,0],rotation:0,normal,support:{kind:'terrain'}},solid=s.add(floor),colliders=solid.colliders,c=new Character({surface:()=>({height:0,normal:[0,1,0]}),colliders:()=>colliders});c.spawn(0,0,4);for(let i=0;i<120;i++)c.update(1/60,characterInput(new Set(['KeyW']),0));return {z:c.feet[2],solid,floor};};
+    for(const normal of [[0,1,0]as Point3,[0,.94,.341]as Point3]){const blocked=traverse(1.5,normal),f=blocked.solid.colliders[0].floorPlane!;expect(blocked.z).toBeGreaterThan(1.45);const clear=traverse(3,normal);expect(clear.z).toBeLessThan(-2);
+      const topAtCenter=f.point[1]-(f.normal[0]*(blocked.floor.position[0]-f.point[0])+f.normal[2]*(blocked.floor.position[2]-f.point[2]))/f.normal[1],bottomAtCenter=topAtCenter-f.thickness/f.normal[1];expect(bottomAtCenter).toBeCloseTo(blocked.floor.position[1],6);
+      const points=(blocked.solid.shapes[0] as Extract<ConvexShape,{kind:'hull'}>).points;expect(blocked.solid.collider.bottom).toBeCloseTo(Math.min(...points.map(p=>p[1])),6);expect(blocked.solid.collider.top).toBeCloseTo(Math.max(...points.map(p=>p[1])),6);
+    }
+    const s=scene(),normal:Point3=[0,.94,.341],floor:BuildObject={id:'tilted-ground-floor',definitionId:'floor-wood',variant:0,position:[0,-.1,0],rotation:0,normal,support:{kind:'terrain'}},q=orientation(normal,0),inside=rotate([0,0,1.4],q),outside=rotate([0,0,1.7],q);s.add(floor);expect(s.floorAt(inside[0],inside[2])).toBe(true);expect(s.floorAt(outside[0],outside[2])).toBe(false);
   });
 });
 it('does not restore an optimistic child after its parent is rolled back',async()=>{

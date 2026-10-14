@@ -3,10 +3,11 @@
 ## Registry and object data
 
 `shared/object-registry.ts` owns stable object IDs, labels/icons, asset variants,
-dimensions and the nine hotbar assignments. Rocks reuse twelve cached procedural
+dimensions and legacy catalogue assignments used by asset checks. Rocks reuse twelve cached procedural
 meshes at two fixed sizes; trees reuse the existing fifteen oak/birch/palm models.
-Each wall definition has one variant. Q/E cycles definitions and asset variants
-within a hotbar group, without random rerolls; the ninth slot is empty. Wood has a dedicated ImageGen albedo and
+Each wall definition has one variant. The gameplay hotbar now contains nine real
+inventory stacks; E opens the pack and crafting tabs. Natural rocks and trees
+remain scenery rather than craftable hotbar items. Wood has a dedicated ImageGen albedo and
 a procedural normal/roughness texture; stone reuses the shared rock material.
 The `fixture` family registers physical dimensions and optional light parameters.
 Torch is the first fixture: a dry-ground stake, reused materials, procedural flame,
@@ -21,7 +22,8 @@ A saved object contains `id`, `definitionId`, `variant`, `position`, `rotation`,
 `normal`, and `support`. Its ID is the placement request UUID. Support records
 terrain, a rock ID, or a wall/floor/roof ID plus an edge/top/mount/opening socket.
 Doors additionally save optional `state: {open: boolean}`. Objects have no
-owner, inventory, durability or resource state in this pass.
+owner or resource state. Player inventories and crafting costs are saved separately
+in the same world journal; see [inventory and crafting](inventory-and-crafting.md).
 
 The new journal has no legacy save importer. Protocol/generator changes must
 be made deliberately when changing source or collision contracts.
@@ -56,14 +58,18 @@ update together. Rejecting an optimistic child restores the solid wall. Openings
 are centered, one per wall, to provide stable future construction sockets.
 Mounted torches require intact material beside an opening.
 
-Floor stamps lower original terrain by at most 0.4 m, never cumulatively. Grading
-uses the same global 2 m vertex samples for authoritative queries and rendered
-terrain, and a blended margin covers interpolation beneath the slab. Grade
-before LOD stitching; coarse edge samples must include the same floor stamps.
-Only affected chunk meshes and scenery anchors rebuild. Stamps are derived from
-saved floor objects and naturally disappear on optimistic rollback. They never
-alter the world seed or terrain generator version. Roofs need a wall or another
-roof; floor-supported walls align with their supporting floor edge.
+Floors follow the sampled hillside and can be tilted independently of their
+snapping yaw. T adds 5° and the wheel adds 1°, with a 30° control limit; the
+tilt axis follows the camera heading on terrain and the support wall when
+stacked. They chain edge-to-edge and can extend from a wall top like roofs.
+Floor colliders and render transforms use the saved surface normal. Movement
+can stand and walk along the inclined floor plane. Floor grading removes at
+most 1.25 m directly beneath its footprint, never cumulatively or by raising
+ground. Grading uses the same global terrain samples for authoritative queries
+and rendered terrain; floor removal clears its grading stamp. Floors break as
+one object like beds and cannot be repaired, while walls and roofs retain voxel damage. Roofs need a
+wall or another roof; floor-supported walls align with their supporting floor
+edge.
 
 Endpoint attachments preserve a joint position and rotate the child about it.
 Only a small contact region around that joint permits overlap with its parent;
@@ -126,6 +132,6 @@ the preview buffers along with ordinary GPU resources.
 `npm test` covers placement, collision, support, retry and transaction rules.
 `npm run build` checks TypeScript, client bundles and Pages asset sizes.
 `npm run build:server` builds the production Node workers.
-`npm run check:multiplayer` checks one Chrome client against an isolated server.
-The old building/catalogue browser entry points delegate to that smoke harness;
+`npm run check:multiplayer` checks one Chrome client and a protocol peer against
+an isolated server. The old building/catalogue browser entry points delegate to that smoke harness;
 they do not claim their previous multi-scenario coverage.

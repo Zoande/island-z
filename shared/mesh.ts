@@ -8,18 +8,26 @@ export interface ChunkData extends ChunkRequest { vertices: Float32Array; indice
 export function generateChunk(world: WorldGenerator, request: ChunkRequest,profile=false): ChunkData {
   const started=profile?performance.now():0;
   const extent = BASE_CHUNK * 2 ** request.level, step = extent / GRID;
-  const vertices: number[] = [], indices: number[] = [];
+  const surfaceVertexCount=(GRID+1)**2, skirtVertexCount=4*(GRID+1);
+  const vertices = new Float32Array((surfaceVertexCount+skirtVertexCount)*VERTEX_FLOATS);
+  const exactHeights=new Float64Array(surfaceVertexCount);
+  const indices = new Uint32Array(GRID*GRID*6+4*GRID*6);
+  let vertexOffset=0,indexOffset=0;
   let minHeight = Infinity, maxHeight = -Infinity;
-  const vertex = (x: number, z: number, drop = 0) => {
-    const sample = world.sample(request.x + x, request.z + z), h = sample.height - drop;
+  const vertex = (x: number, z: number) => {
+    const sample = world.sample(request.x + x, request.z + z), h = sample.height;
+    exactHeights[vertexOffset/VERTEX_FLOATS]=h;
     minHeight = Math.min(minHeight, h); maxHeight = Math.max(maxHeight, h);
-    const index = vertices.length / VERTEX_FLOATS;
-    vertices.push(x, h, z, ...sample.normal, x, z, ...sample.weights); return index;
+    vertices[vertexOffset++]=x;vertices[vertexOffset++]=h;vertices[vertexOffset++]=z;
+    vertices[vertexOffset++]=sample.normal[0];vertices[vertexOffset++]=sample.normal[1];vertices[vertexOffset++]=sample.normal[2];
+    vertices[vertexOffset++]=x;vertices[vertexOffset++]=z;
+    for(const weight of sample.weights)vertices[vertexOffset++]=weight;
   };
   for (let z = 0; z <= GRID; z++) for (let x = 0; x <= GRID; x++) vertex(x * step, z * step);
   for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
     const a = z * (GRID + 1) + x, b = a + 1, c = a + GRID + 1, d = c + 1;
-    indices.push(a, c, b, b, c, d);
+    indices[indexOffset++]=a;indices[indexOffset++]=c;indices[indexOffset++]=b;
+    indices[indexOffset++]=b;indices[indexOffset++]=c;indices[indexOffset++]=d;
   }
   // Edge skirts hide mismatched tessellation without moving shared surface samples.
   // Stitching handles LOD gaps; shallow skirts only cover transient roundoff cracks.
@@ -31,13 +39,24 @@ export function generateChunk(world: WorldGenerator, request: ChunkRequest,profi
     Array.from({ length: GRID + 1 }, (_, i) => (GRID - i) * (GRID + 1)),
   ];
   for (const edge of edges) {
-    const bottoms = edge.map(i => vertex(vertices[i * VERTEX_FLOATS], vertices[i * VERTEX_FLOATS + 2], skirtDepth));
-    for (let i = 0; i < GRID; i++) indices.push(edge[i], bottoms[i], edge[i + 1], edge[i + 1], bottoms[i], bottoms[i + 1]);
+    const bottoms:number[]=[];
+    for(const i of edge) {
+      const source=i*VERTEX_FLOATS,bottom=vertexOffset/ VERTEX_FLOATS;
+      for(let k=0;k<VERTEX_FLOATS;k++)vertices[vertexOffset++]=vertices[source+k];
+      const bottomHeight=exactHeights[i]-skirtDepth;
+      vertices[bottom*VERTEX_FLOATS+1]=bottomHeight;
+      minHeight=Math.min(minHeight,bottomHeight);
+      bottoms.push(bottom);
+    }
+    for (let i = 0; i < GRID; i++) {
+      indices[indexOffset++]=edge[i];indices[indexOffset++]=bottoms[i];indices[indexOffset++]=edge[i+1];
+      indices[indexOffset++]=edge[i+1];indices[indexOffset++]=bottoms[i];indices[indexOffset++]=bottoms[i+1];
+    }
   }
   const meshTime=profile?performance.now():0;
   const props=request.level<=2?world.props(request.x,request.z,extent,request.level===0):request.level<=4?world.treeProps(request.x,request.z,extent):[];
   const propTime=profile?performance.now():0,water=waterGeometry(world.water,request);
-  const result:ChunkData={...request,vertices:new Float32Array(vertices),indices:new Uint32Array(indices),props,minHeight,maxHeight,water};
+  const result:ChunkData={...request,vertices,indices,props,minHeight,maxHeight,water};
   if(profile)result.timings={terrain:meshTime-started,props:propTime-meshTime,water:performance.now()-propTime,total:performance.now()-started};
   return result;
 }

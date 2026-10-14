@@ -1,4 +1,5 @@
 import type {CharacterInput,CharacterState} from './character';
+import {validBodyHealth} from './health';
 export const PROTOCOL_VERSION=1;
 export const INTEREST_CELL=128;
 export const WORLD_HZ=30, SNAPSHOT_HZ=20, INPUT_HZ=120;
@@ -9,13 +10,13 @@ export const validCell=(v:unknown):v is string=>typeof v==='string'&&/^-?\d{1,7}
 export function validInput(value:unknown):value is InputStep {
   const v=value as InputStep,i=v?.input;
   return !!v&&Number.isSafeInteger(v.seq)&&v.seq>0&&!!i&&typeof i.sprint==='boolean'&&typeof i.jump==='boolean'&&
-    [i.x,i.z].every(n=>Number.isFinite(n)&&Math.abs(n)<=1.5)&&
+    [i.x,i.z].every(n=>Number.isFinite(n)&&Math.abs(n)<=1.5)&&(i.slot===undefined||Number.isInteger(i.slot)&&i.slot>=0&&i.slot<=8)&&(i.stance===undefined||['stand','crouch','crawl'].includes(i.stance))&&
     (i.swimVector===undefined||Array.isArray(i.swimVector)&&i.swimVector.length===3&&i.swimVector.every(n=>Number.isFinite(n)&&Math.abs(n)<=1.5));
 }
 /** Trusted-mode snapshots are still bounded before entering the world runtime. */
 export function validCharacterState(value:unknown):value is CharacterState {
   const s=value as CharacterState, point=(p:unknown,limit=1e7):p is [number,number,number]=>Array.isArray(p)&&p.length===3&&p.every(n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=limit);
-  const fields=new Set(['feet','velocity','home','grounded','inBush','ready','swimming','underwater','sprinting','accelerating','exhausted','oxygen','oxygenDrainRate','stamina','waterLevel','respawns','swimActive','waterKind','accumulator','jumpHeld','jumpBuffer','coyote']);
+  const fields=new Set(['feet','velocity','home','grounded','inBush','ready','swimming','underwater','sprinting','accelerating','exhausted','oxygen','oxygenDrainRate','stamina','waterLevel','respawns','swimActive','waterKind','accumulator','jumpHeld','jumpBuffer','coyote','health','crawling','stanceIntent','posture','lastDeathCause','fallStartY','fallStartX','fallStartZ','trustedFallStartY','drowningTime']);
   if(!s||typeof s!=='object'||Object.keys(s).some(k=>!fields.has(k))||!point(s.feet)||!point(s.velocity,100)||
     !['grounded','inBush','ready','swimming','underwater','sprinting','accelerating','exhausted','swimActive','jumpHeld'].every(k=>typeof (s as any)[k]==='boolean')||
     !['oxygen','oxygenDrainRate','stamina','accumulator','jumpBuffer','coyote'].every(k=>Number.isFinite((s as any)[k]))||
@@ -25,6 +26,8 @@ export function validCharacterState(value:unknown):value is CharacterState {
     ![s.oxygen,s.oxygenDrainRate,s.stamina,s.accumulator,s.jumpBuffer,s.coyote].every(n=>n>=0)||
     s.oxygen>3600||s.oxygenDrainRate>100||s.stamina>100||s.accumulator>.1||s.jumpBuffer>1||s.coyote>1||
     !Number.isFinite(s.waterLevel??0)||Math.abs(s.waterLevel??0)>1e7) return false;
+  if(s.health!==undefined&&!validBodyHealth(s.health)||s.crawling!==undefined&&typeof s.crawling!=='boolean'||s.stanceIntent!==undefined&&!['stand','crouch','crawl'].includes(s.stanceIntent)||s.posture!==undefined&&!['stand','crouch','crawl'].includes(s.posture)||s.lastDeathCause!==undefined&&(typeof s.lastDeathCause!=='string'||s.lastDeathCause.length>40)||
+    !['fallStartY','fallStartX','fallStartZ','trustedFallStartY','drowningTime'].every(k=>(s as any)[k]===undefined||Number.isFinite((s as any)[k])&&Math.abs((s as any)[k])<=1e7)||s.drowningTime!==undefined&&(s.drowningTime<0||s.drowningTime>3600))return false;
   return true;
 }
 /** Small, versioned binary value codec. Typed distance bricks stay packed on the wire.

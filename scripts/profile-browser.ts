@@ -6,12 +6,13 @@ const movement=process.argv[3]==='movement';
 const walk=process.argv[3]==='walk'||movement;
 const depthCompare=process.argv[3]==='depth-compare';
 const compare=process.argv[3]==='compare'||depthCompare;
-const browser=await chromium.launch({channel:'chrome',headless:true,args:['--enable-unsafe-webgpu','--ignore-gpu-blocklist']});
+const launch={headless:true,args:['--enable-unsafe-webgpu','--ignore-gpu-blocklist']};
+const browser=await chromium.launch({...launch,channel:'chrome'}).catch(()=>chromium.launch({...launch,executablePath:process.env.CHROMIUM_PATH??'/usr/bin/chromium'}));
 const page=await browser.newPage({viewport:{width:1600,height:900}}),errors:string[]=[];
 page.on('dialog',d=>d.accept('Profiler'));
 page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 try {
-  const began=Date.now();await page.goto('http://127.0.0.1:5173/?profile=1');
+  const began=Date.now();await page.goto(process.env.PROFILE_URL??'http://127.0.0.1:5173/?profile=1');
   await page.waitForTimeout(2000);
   await page.waitForFunction(()=>{const a=(window as any).__island;if(a?.failed||document.getElementById('overlay-title')?.textContent==='The viewer needs attention')throw new Error(document.getElementById('message')?.textContent??'Failed');return a?.player.ready&&a.stream.loading===0&&a.stream.pending.length===0;},{},{timeout:120000});
   const gpu=await page.evaluate(async()=>{const a=await navigator.gpu?.requestAdapter(),i=a?.info;return {available:!!a,info:i?{vendor:i.vendor,architecture:i.architecture,device:i.device,description:i.description}:null,features:a?[...a.features]:[]};});console.log(JSON.stringify(gpu));
@@ -66,4 +67,4 @@ try {
   mkdirSync('artifacts',{recursive:true});writeFileSync(`artifacts/performance-${label}.json`,JSON.stringify({gpu,errors,startup,reports,validation},null,2));
   await page.screenshot({path:`artifacts/performance-${label}.png`});console.log(JSON.stringify({label,errors,reports:reports.map(r=>({fps:r.fps,cpu:r.cpu,gpu:r.gpu,counters:r.counters}))}));
   if(errors.length)throw new Error(`Browser reported ${errors.length} errors: ${errors.join('\n')}`);
-}finally {await browser.close();}
+}catch(error){mkdirSync('artifacts',{recursive:true});writeFileSync(`artifacts/performance-${label}-failure.json`,JSON.stringify({error:String(error),errors},null,2));throw error;}finally {await browser.close();}

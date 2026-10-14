@@ -1,12 +1,15 @@
 import {describe,it,expect} from 'vitest';
 import {mat4} from 'gl-matrix';
 import {FrameProfiler} from '../client/performance';
-import {frustumPlanes,sphereInFrustum} from '../client/culling';
+import {frustumPlanes,sphereInFrustum,indexChunkNeighborhoods,type SpatialChunk} from '../client/culling';
 import {grassMesh,rockMesh,compactVertices,compactIndices} from '../client/geometry';
 import {modelBounds,impostorMesh} from '../client/impostors';
 import {WorldGenerator} from '../shared/world';
 import {VERTEX_FLOATS} from '../shared/mesh';
 import {lodEntries,TREE_LOD,rangeFade} from '../client/lod';
+import {daylightLighting} from '../shared/daylight';
+import {LIGHTING_FLOATS,packLighting} from '../client/lighting';
+import type {BuildSolid} from '../shared/build-scene';
 
 describe('performance foundations',()=>{
   it('packs indices losslessly and retains large mesh addressing',()=>{
@@ -54,6 +57,45 @@ describe('performance foundations',()=>{
     expect(sphereInFrustum(planes,1.3,0,.5,.2)).toBe(false);
     expect(sphereInFrustum(planes,0,0,-.3,.2)).toBe(false);
     expect(sphereInFrustum(planes,0,0,1.3,.2)).toBe(false);
+  });
+  it('matches exhaustive seam and support neighbors for a mixed-level tile cover',()=>{
+    const chunks:SpatialChunk[]=[];
+    const add=(x:number,z:number,level:number,seed:number)=>{
+      if(level>0&&((seed*17+x/64+z/64)%5===0)) {
+        const half=64*2**(level-1);
+        add(x,z,level-1,seed+1);add(x+half,z,level-1,seed+2);add(x,z+half,level-1,seed+3);add(x+half,z+half,level-1,seed+4);
+      } else chunks.push({x,z,level});
+    };
+    for(let z=-1024;z<1024;z+=1024)for(let x=-1024;x<1024;x+=1024)add(x,z,4,(x+1024)/1024+(z+1024)/512);
+    chunks.reverse();
+    const indexed=indexChunkNeighborhoods(chunks,64,32);
+    const exhaustive=chunks.map(chunk=>{
+      const extent=64*2**chunk.level,neighbors=[chunk.level,chunk.level,chunk.level,chunk.level];
+      chunks.forEach(other=>{
+        const e=64*2**other.level;if(other.level<=chunk.level)return;
+        const overlapX=other.x<chunk.x+extent&&other.x+e>chunk.x,overlapZ=other.z<chunk.z+extent&&other.z+e>chunk.z;
+        if(overlapX&&other.z+e===chunk.z)neighbors[0]=Math.max(neighbors[0],other.level);
+        if(overlapZ&&other.x===chunk.x+extent)neighbors[1]=Math.max(neighbors[1],other.level);
+        if(overlapX&&other.z===chunk.z+extent)neighbors[2]=Math.max(neighbors[2],other.level);
+        if(overlapZ&&other.x+e===chunk.x)neighbors[3]=Math.max(neighbors[3],other.level);
+      });
+      const support:number[]=[];
+      chunks.forEach((other,index)=>{const e=64*2**other.level;if(other.x<chunk.x+extent+32&&other.x+e>chunk.x-32&&other.z<chunk.z+extent+32&&other.z+e>chunk.z-32)support.push(index);});
+      return {neighbors,support};
+    });
+    expect(indexed.seamLevels).toEqual(exhaustive.map(result=>result.neighbors));
+    expect(indexed.supportIndices).toEqual(exhaustive.map(result=>result.support));
+  });
+  it('packs the nearest local lights and only their nearby shadow walls',()=>{
+    const makeSolid=(id:string,kind:string,x:number,z:number,colliders:BuildSolid['colliders']=[])=>({id,prop:{kind,x,y:0,z,scale:1,rotation:0},colliders} as unknown as BuildSolid);
+    const wall={x:11,y:1,z:0,radius:1,bottom:0,top:2,wall:{yaw:0,halfWidth:2,halfDepth:.3}} as unknown as BuildSolid['colliders'][number];
+    const solids=[makeSolid('far','torch',0,30),makeSolid('near','torch',10,0),makeSolid('wall','brick',11,0,[wall])];
+    const values=new Float32Array(LIGHTING_FLOATS);
+    expect(packLighting(values,daylightLighting(12),[0,0,0],solids,1,0)).toBe(1);
+    expect(values[32]).toBe(1);expect(values[33]).toBe(1);
+    expect(values[36]).toBe(10);expect(values[37]).toBeCloseTo(1.83);expect(values[38]).toBe(0);expect(values[39]).toBe(18);
+    const wallOffset=36+24*8;
+    expect([...values.slice(wallOffset,wallOffset+4)]).toEqual([11,1,0,0]);
   });
   it('reduces rock and grass geometry while retaining height and a grounded underside',()=>{
     for(let variant=0;variant<12;variant++) {

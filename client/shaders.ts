@@ -72,6 +72,9 @@ fn wallBlocks(origin:vec3f,destination:vec3f,wall:LightWall)->bool {
   return near<far&&far>.002&&near<.998;
 }
 fn localLighting(base:vec3f,roughness:f32,n:vec3f,position:vec3f,foliage:f32)->vec3f {
+  // Light counts are uniform for the frame. Most scenes have no local lights,
+  // so avoid even preparing the per-pixel view vector in that common case.
+  if(lighting.counts.x<=0.0){return vec3f(0.0);}
   var result=vec3f(0.0);let view=normalize(-position);
   for(var i=0u;i<u32(lighting.counts.x);i++) {
     let light=lighting.lights[i];let offset=light.positionRadius.xyz-position;
