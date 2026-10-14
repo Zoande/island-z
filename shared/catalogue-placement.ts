@@ -5,6 +5,8 @@ import {CHARACTER} from './character';
 import {intersects,type ConvexShape} from './convex';
 import type {Point3} from './rocks';
 import type {Placement} from './build-placement';
+import {orientation,rotate,floorTiltNormal} from './placement';
+import {FLOOR_MAX_GRADE_DEPTH,floorPlaneHeight,floorFootprintContains} from './build-terrain';
 const pairHit=(a:BuildSolid,b:BuildSolid)=>a.shapes.some(x=>b.shapes.some(y=>intersects(x,y)));
 export function finishPlacement(scene:BuildScene,r:BuildRequest,object:BuildObject,anchor?:BuildSolid):Placement {
   const fail=(code:string,reason:string):Placement=>({object,valid:false,code,reason}),candidate=scene.solid(buildProp(object),object.id,object);
@@ -16,7 +18,7 @@ export function finishPlacement(scene:BuildScene,r:BuildRequest,object:BuildObje
     if(s.id===object.id||s.id===anchor?.id)continue;
     if(pairHit(candidate,s))return fail('overlap',`Overlaps ${s.object?'another build':s.collider.kind==='bush'?'a bush':s.collider.kind==='tree'?'a tree':'a rock'}`);
   }
-  if(r.expected){const e=r.expected,d=Math.atan2(Math.sin(e.rotation-object.rotation),Math.cos(e.rotation-object.rotation));if(Math.hypot(...object.position.map((n,i)=>n-e.position[i]))>.035||Math.abs(d)>.001||JSON.stringify(e.support)!==JSON.stringify(object.support))return fail('changed','The placement changed; aim again');}
+  if(r.expected){const e=r.expected,d=Math.atan2(Math.sin(e.rotation-object.rotation),Math.cos(e.rotation-object.rotation));if(Math.hypot(...object.position.map((n,i)=>n-e.position[i]))>.035||Math.abs(d)>.001||e.normal&&Math.hypot(...object.normal.map((n,i)=>n-e.normal![i]))>.001||JSON.stringify(e.support)!==JSON.stringify(object.support))return fail('changed','The placement changed; aim again');}
   return {object,valid:true,code:'ok',reason:object.support.kind==='terrain'?'Ready to place':object.support.kind==='wall'&&object.support.socket==='opening'?'Creates an opening in this wall':'Attached · aligned to support'};
 }
 export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|null {
@@ -50,13 +52,13 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
     let best=SNAP_DISTANCE,side:SnapSocket|undefined;
     for(const solid of scene.placed.query(p[0],p[2],5)){
       const parent=solid.object!,pd=objectDefinition(parent.definitionId);if(pd.family!==d.family)continue;
-      const a=pd.slab!,c=Math.cos(parent.rotation),s=Math.sin(parent.rotation);
+      const a=pd.slab!,q=orientation(parent.normal,parent.rotation);
       for(const [socket,x,z]of [['left',-a.width/2,0],['right',a.width/2,0],['front',0,a.depth/2],['back',0,-a.depth/2]]as const){
-        const xz:[number,number]=[parent.position[0]+x*c+z*s,parent.position[2]-x*s+z*c],distance=Math.hypot(p[0]-xz[0],p[2]-xz[1]);
-        if(distance<best&&Math.abs(p[1]-parent.position[1])<.65){best=distance;anchor=solid;side=socket;}
+        const off=rotate([x,0,z],q),edge:[number,number,number]=[parent.position[0]+off[0],parent.position[1]+off[1],parent.position[2]+off[2]],distance=Math.hypot(p[0]-edge[0],p[2]-edge[2]);
+        if(distance<best&&Math.abs(p[1]-edge[1])<.65){best=distance;anchor=solid;side=socket;}
       }
     }
-    if(anchor&&side){const a=anchor.object!,c=Math.cos(a.rotation),s=Math.sin(a.rotation),x=side==='left'?-3:side==='right'?3:0,z=side==='front'?3:side==='back'?-3:0;object.rotation=a.rotation;object.position=[a.position[0]+x*c,a.position[1],a.position[2]-x*s+z*c];object.support={kind:d.family as 'floor'|'roof',id:a.id,socket:side};}
+    if(anchor&&side){const a=anchor.object!,ad=objectDefinition(a.definitionId).slab!,q=orientation(a.normal,a.rotation),x=side==='left'?-(ad.width+d.slab.width)/2:side==='right'?(ad.width+d.slab.width)/2:0,z=side==='front'?(ad.depth+d.slab.depth)/2:side==='back'?-(ad.depth+d.slab.depth)/2:0,off=rotate([x,0,z],q);object.rotation=a.rotation;object.normal=d.family==='floor'?floorTiltNormal(a.normal,r.direction,r.tilt??0):a.normal;object.position=[a.position[0]+off[0],a.position[1]+off[1],a.position[2]+off[2]];object.support={kind:d.family as 'floor'|'roof',id:a.id,socket:side};}
     else if(d.family==='roof'){
       anchor=hit.solid;
       if(anchor?.object&&objectDefinition(anchor.object.definitionId).attachment&&anchor.object.support.kind==='wall')anchor=scene.placed.get(anchor.object.support.id);
@@ -67,16 +69,21 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
       const reference=floor?.position??r.eye,projection=(reference[0]-parent.position[0])*s+(reference[2]-parent.position[2])*c;
       const defaultSide=(projection>=0?1:-1)*(floor?1:-1),side=defaultSide*(Math.abs(Math.round(r.rotation/(Math.PI/2)))%2?-1:1);
       object.rotation=parent.rotation;object.position=[parent.position[0]+s*1.5*side,parent.position[1]+w.height,parent.position[2]+c*1.5*side];object.support={kind:'wall',id:parent.id,socket:'top'};
-    }else if(hit.solid)return fail('support','Floors need ground or a floor edge');
+    }else if(d.family==='floor'&&hit.solid?.object&&objectDefinition(hit.solid.object.definitionId).wall){
+      anchor=hit.solid;const parent=anchor.object!,wall=objectDefinition(parent.definitionId).wall!,c=Math.cos(parent.rotation),s=Math.sin(parent.rotation),projection=(r.eye[0]-parent.position[0])*s+(r.eye[2]-parent.position[2])*c,side=projection>=0?1:-1;
+      object.rotation=parent.rotation;object.normal=floorTiltNormal([0,1,0],r.direction,r.tilt??0,parent.rotation);object.position=[parent.position[0]+s*1.5*side,parent.position[1]+wall.height,parent.position[2]+c*1.5*side];object.support={kind:'wall',id:parent.id,socket:'top'};
+    }else if(hit.solid)return fail('support','Floors need ground, a wall top, or a floor edge');
     if(d.family==='floor'){
-      // Sample the 2m canonical vertices that can interpolate into the footprint.
-      // A floor cannot become a bridge, nor excavate more than forty centimetres.
-      const c=Math.cos(object.rotation),s=Math.sin(object.rotation),heights:number[]=[];
-      for(let x=Math.floor((object.position[0]-5)/2)*2;x<=object.position[0]+5;x+=2)for(let z=Math.floor((object.position[2]-5)/2)*2;z<=object.position[2]+5;z+=2){const dx=x-object.position[0],dz=z-object.position[2];if(Math.abs(dx*c-dz*s)<=4.5&&Math.abs(dx*s+dz*c)<=4.5){const base=scene.terrain(x,z).height,ground=scene.groundSurface(x,z,object.position[1]).height;heights.push(ground<base-.001?ground:scene.world.height(x,z));}}
-      const maximum=Math.max(...heights);if(!anchor)object.position[1]=Math.max(scene.groundSurface(p[0],p[2],p[1]).height-.1,maximum-.38);
-      if(maximum-object.position[1]>.385)return fail('ground','This floor needs more than 0.4 m of excavation');
+      const terrain=scene.groundSurface(object.position[0],object.position[2],object.position[1]);
+      if(!anchor)object.normal=floorTiltNormal(terrain.normal,r.direction,r.tilt??0);
+      if(object.normal[1]<.5)return fail('slope','The floor tilt is too steep');
+      const q=orientation(object.normal,object.rotation),support:number[]=[];
+      for(let ix=0;ix<=12;ix++)for(let iz=0;iz<=12;iz++){const localX=(ix/12-.5)*d.slab.width,localZ=(iz/12-.5)*d.slab.depth,off=rotate([localX,0,localZ],q),x=object.position[0]+off[0],z=object.position[2]+off[2],ground=scene.groundSurface(x,z,object.position[1]).height,offset=floorPlaneHeight([object.position[0],0,object.position[2]],object.normal,x,z);support.push(ground-offset);}
+      if(!anchor)object.position[1]=Math.max(...support)-.10;
+      const maxCut=anchor?0:Math.max(...support.map(required=>required-object.position[1]));
+      if(maxCut>FLOOR_MAX_GRADE_DEPTH)return fail('ground',`This floor needs more than ${FLOOR_MAX_GRADE_DEPTH} m of excavation`);
       const samples=footprint(d.slab.width,d.slab.depth,object);
-      if(samples.some(q=>scene.groundSurface(q[0],q[2],object.position[1]).height<object.position[1]-.32))return fail('support','The floor would leave too much unsupported ground');
+      if(!anchor&&samples.some(pt=>floorPlaneHeight(object.position,object.normal,pt[0],pt[2])-scene.groundSurface(pt[0],pt[2],object.position[1]).height>.48))return fail('support','The floor would leave too much unsupported ground');
     }
   }else if(d.wall&&floorHit){
     anchor=hit.solid!;const parent=anchor.object!,slab=objectDefinition(parent.definitionId).slab!,dx=p[0]-parent.position[0],dz=p[2]-parent.position[2],c=Math.cos(parent.rotation),s=Math.sin(parent.rotation),x=dx*c-dz*s,z=dx*s+dz*c;
@@ -95,5 +102,5 @@ export function cataloguePlacement(scene:BuildScene,r:BuildRequest):Placement|nu
   }
   return finishPlacement(scene,r,object,anchor);
 }
-function containsSlab(s:BuildSolid,x:number,z:number){const d=objectDefinition(s.object!.definitionId).slab!,dx=x-s.prop.x,dz=z-s.prop.z,c=Math.cos(s.prop.rotation),sin=Math.sin(s.prop.rotation);return Math.abs(dx*c-dz*sin)<=d.width/2+.01&&Math.abs(dx*sin+dz*c)<=d.depth/2+.01;}
-function footprint(w:number,d:number,o:BuildObject):Point3[]{const c=Math.cos(o.rotation),s=Math.sin(o.rotation),result:Point3[]=[];for(let ix=0;ix<=4;ix++)for(let iz=0;iz<=4;iz++){const x=(ix/4-.5)*w,z=(iz/4-.5)*d;result.push([o.position[0]+x*c+z*s,o.position[1],o.position[2]-x*s+z*c]);}return result;}
+function containsSlab(s:BuildSolid,x:number,z:number){const d=objectDefinition(s.object!.definitionId).slab!;return floorFootprintContains(s.object!.position,s.object!.normal,s.prop.rotation,d.width,d.depth,x,z);}
+function footprint(w:number,d:number,o:BuildObject):Point3[]{const q=orientation(o.normal,o.rotation),result:Point3[]=[];for(let ix=0;ix<=4;ix++)for(let iz=0;iz<=4;iz++){const p=rotate([(ix/4-.5)*w,0,(iz/4-.5)*d],q);result.push([o.position[0]+p[0],o.position[1]+p[1],o.position[2]+p[2]]);}return result;}

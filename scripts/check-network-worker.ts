@@ -15,9 +15,10 @@ await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
 const api=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 let delayedBaselineCount=0,outage=false;
 server.prependListener('request',(req,res)=>{if(req.url?.startsWith('/api/builds?')&&delayedBaselineCount++===0){const end=res.end.bind(res);(res as any).end=(...args:any[])=>{setTimeout(()=>end(...args),1200);return res;};}});
-const socketProxy=createServer();const proxyWss=new WebSocketServer({noServer:true}),proxyClients=new Set<WebSocket>();
+const socketProxy=createServer();const proxyWss=new WebSocketServer({noServer:true}),proxyClients=new Set<WebSocket>(),waitingClients=new Set<WebSocket>();
 socketProxy.on('upgrade',(req,socket,head)=>{if(req.url!=='/api/events'){socket.destroy();return;}proxyWss.handleUpgrade(req,socket,head,client=>proxyWss.emit('connection',client));});
-proxyWss.on('connection',client=>{proxyClients.add(client);client.once('close',()=>proxyClients.delete(client));if(outage){client.close(4001,'Simulated network outage');return;}const upstream=new WebSocket(api.replace(/^http/,'ws')+'/api/events',{headers:{Origin:origin}});client.on('message',(data,isBinary)=>{if(upstream.readyState===WebSocket.OPEN)upstream.send(data,{binary:isBinary});});upstream.on('message',(data,isBinary)=>{if(client.readyState===WebSocket.OPEN)client.send(data,{binary:isBinary});});client.on('close',()=>upstream.close());upstream.on('close',(code,reason)=>{if(client.readyState===WebSocket.OPEN)client.close(code>=3000&&code<=4999?code:4001,reason.toString());});});
+function connectUpstream(client:WebSocket){if(client.readyState!==WebSocket.OPEN)return;const upstream=new WebSocket(api.replace(/^http/,'ws')+'/api/events',{headers:{Origin:origin}});client.on('message',(data,isBinary)=>{if(upstream.readyState===WebSocket.OPEN)upstream.send(data,{binary:isBinary});});upstream.on('message',(data,isBinary)=>{if(client.readyState===WebSocket.OPEN)client.send(data,{binary:isBinary});});client.on('close',()=>upstream.close());upstream.on('close',(code,reason)=>{if(client.readyState===WebSocket.OPEN)client.close(code>=3000&&code<=4999?code:4001,reason.toString());});}
+proxyWss.on('connection',client=>{proxyClients.add(client);client.once('close',()=>{proxyClients.delete(client);waitingClients.delete(client);});if(outage){waitingClients.add(client);return;}connectUpstream(client);});
 await new Promise<void>(resolve=>socketProxy.listen(0,'127.0.0.1',resolve));const proxyPort=(socketProxy.address() as AddressInfo).port;
 const vite=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1','--port','4118','--strictPort'],{env:{...process.env,VITE_API_URL:api},stdio:'pipe'});
 let output='';vite.stdout.on('data',b=>output+=b);vite.stderr.on('data',b=>output+=b);
@@ -77,12 +78,13 @@ try{
  const afterGrace=await page.evaluate(()=>[...(window as any).__workerMessages as any[]].filter(m=>m.type==='state'&&m.connected===false).at(-1)?.state.feet);
  if(JSON.stringify(lastGraceState)!==JSON.stringify(afterGrace))throw new Error('Worker continued publishing predicted state beyond the two-second grace');
  await page.evaluate(()=>((window as any).__worker).postMessage({type:'input',input:{x:0,z:0,sprint:false,jump:false}}));
- outage=false;
+ outage=false;for(const client of waitingClients){waitingClients.delete(client);connectUpstream(client);}
  await waitFor(()=>((window as any).__workerMessages??[]).filter((m:any)=>m.type==='welcome').length>=2,30000);
  const reconnectedWelcome=await page.evaluate(()=>[...(window as any).__workerMessages as any[]].filter(m=>m.type==='welcome').at(-1).message);
+ if(!reconnectedWelcome.resumeAccepted)throw new Error(`Server rejected reconnect replay (${reconnectedWelcome.resumeReason}; inputs=${reconnectedWelcome.resumeInputCount??0})`);
  const correction=Math.hypot(reconnectedWelcome.state.feet[0]-serverState[0],reconnectedWelcome.state.feet[2]-serverState[2]);
- if(correction>1.5)throw new Error(`Reconnect did not restore server state (${correction.toFixed(2)}m)`);
- report.reconnect={serverState,offlineMoved,reconnected:reconnectedWelcome.state.feet,correction,graceMs:2000};
+ if(correction<.15||correction>10.7)throw new Error(`Reconnect did not count bounded server-checked offline movement (${correction.toFixed(2)}m)`);
+ report.reconnect={serverState,offlineMoved,reconnected:reconnectedWelcome.state.feet,acceptedOfflineDistance:correction,replayedInputs:reconnectedWelcome.resumeInputCount,graceMs:2000};
  if(protocolErrors.length)throw new Error(protocolErrors.join('\n'));report.passed=true;
 }finally{
  report.delayedBaselineRequests=delayedBaselineCount;

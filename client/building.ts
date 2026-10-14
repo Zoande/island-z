@@ -21,7 +21,7 @@ const icons:Record<string,string>={rock:'<path d="M6 24 11 10 25 6 34 17 30 30 1
 Object.assign(icons,{floor:'<path d="m4 22 16-9 16 9-16 9ZM4 22v5l16 9 16-9v-5M20 31v5M12 18l16 9M20 13l16 9"/>',roof:'<path d="m3 25 17-17 17 17M7 22v11h26V22M12 16l17 17M20 8l13 14"/>',fire:'<path d="m7 30 26 5M7 35l26-5M20 4c0 7 10 10 7 18-3 7-16 7-16-1 0-4 5-6 6-11 1 3 3 4 3-6Z"/>',bed:'<path d="M5 34V10h3v17h27v7M8 18h12v9M20 20h15v7M12 18v-5h7v5M5 30h30"/>',table:'<path d="M4 16h32v5H4ZM8 21v15M32 21v15M5 16l5-8h20l5 8M10 21h20"/>',chair:'<path d="M10 4h20v18H10ZM8 22h24v5H8ZM10 27v9M30 27v9M10 10h20M10 16h20"/>',door:'<path d="M7 36V4h26v32M12 9h17v27H12ZM24 22h2M12 14h17M12 30h17"/>',window:'<path d="M5 8h30v25H5ZM8 11h24v19H8ZM20 11v19M8 21h24M3 34h34"/>'});
 export class BuildingController {
   network?:MultiplayerClient;private lastCellSignature='';
-  readonly scene:BuildScene;readonly destruction:DestructionController;selected=8;variant=0;rotation=0;preview:Placement|null=null;
+  readonly scene:BuildScene;readonly destruction:DestructionController;selected=8;variant=0;rotation=0;tilt=0;preview:Placement|null=null;
   readonly pending=new Map<string,BuildObject>();private confirmed=new Map<string,{object:BuildObject;revision:number}>();
   private cells=new Map<string,Cell>();private worldKey='';private connection='Connecting';private worldChanged=false;
   private polling=false;private lastPoll=-Infinity;private abort=new AbortController();
@@ -35,19 +35,20 @@ export class BuildingController {
     hotbar.innerHTML=hotbarSlots.map((group,i)=>{const d=group?objectDefinition(group[0]):null;return `<button class="hotbar-slot" data-slot="${i}" aria-label="${i+1}: ${d?.label??'Empty slot'}" aria-pressed="${i===this.selected}"><span class="slot-number">${i+1}</span>${d?`<svg viewBox="0 0 40 40" aria-hidden="true">${icons[d.icon]??icons.wood}</svg><span class="slot-label">${d.label}</span><span class="slot-choices">1 / ${catalogueChoices(i).length}</span>`:'<span class="slot-label">Hands</span>'}</button>`;}).join('');
     const options={signal:this.abort.signal};
     hotbar.addEventListener('click',e=>{const button=(e.target as HTMLElement).closest<HTMLElement>('[data-slot]');if(button)this.select(Number(button.dataset.slot));},options);
-    window.addEventListener('keydown',e=>{if(document.pointerLockElement!==camera.canvas||e.repeat)return;if(/^Digit[1-9]$/.test(e.code)){e.preventDefault();this.select(Number(e.code.slice(-1))-1);}else if((e.code==='KeyQ'||e.code==='KeyE')&&hotbarSlots[this.selected]){e.preventDefault();this.cycle(e.code==='KeyQ'?-1:1);}else if(e.code==='KeyT'&&hotbarSlots[this.selected]){e.preventDefault();this.rotate(Math.PI/2);}else if(e.code==='KeyF'){e.preventDefault();this.toggleDoor();}},options);
-    camera.canvas.addEventListener('wheel',e=>{if(document.pointerLockElement!==camera.canvas||!hotbarSlots[this.selected])return;e.preventDefault();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?100:1);this.rotate(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);},{...options,passive:false});
+    window.addEventListener('keydown',e=>{if(document.pointerLockElement!==camera.canvas||e.repeat)return;if(/^Digit[1-9]$/.test(e.code)){e.preventDefault();this.select(Number(e.code.slice(-1))-1);}else if((e.code==='KeyQ'||e.code==='KeyE')&&hotbarSlots[this.selected]){e.preventDefault();this.cycle(e.code==='KeyQ'?-1:1);}else if(e.code==='KeyT'&&hotbarSlots[this.selected]){e.preventDefault();if(this.definitionId&&objectDefinition(this.definitionId).family==='floor')this.adjustTilt(Math.PI/36);else this.rotate(Math.PI/2);}else if(e.code==='KeyF'){e.preventDefault();this.toggleDoor();}},options);
+    camera.canvas.addEventListener('wheel',e=>{if(document.pointerLockElement!==camera.canvas||!hotbarSlots[this.selected])return;e.preventDefault();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?100:1);if(this.definitionId&&objectDefinition(this.definitionId).family==='floor')this.adjustTilt(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);else this.rotate(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);},{...options,passive:false});
     camera.canvas.addEventListener('click',e=>{if(e.button===0&&document.pointerLockElement===camera.canvas)this.place();},options);
   }
   select(slot:number) {
-    if(!Number.isInteger(slot)||slot<0||slot>=hotbarSlots.length)return;this.selected=slot;this.rotation=0;this.noticeUntil=0;
+    if(!Number.isInteger(slot)||slot<0||slot>=hotbarSlots.length)return;this.selected=slot;this.rotation=0;this.tilt=0;this.noticeUntil=0;
     this.variant=catalogueChoices(slot)[this.choices.get(slot)??0]?.variant??0;
     this.previewSignature='';this.update(0);
   }
   cycle(direction:number){const choices=catalogueChoices(this.selected);if(!choices.length)return;const index=((this.choices.get(this.selected)??0)+direction+choices.length)%choices.length;this.choices.set(this.selected,index);this.variant=choices[index].variant;this.noticeUntil=0;this.previewSignature='';this.hudSignature='';this.update(0);}
   private rotate(angle:number){if(this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top'&&this.definitionId&&objectDefinition(this.definitionId).family==='wall')return;this.rotation=(this.rotation+angle)%(Math.PI*2);this.previewSignature='';this.update(0);}
+  private adjustTilt(angle:number){this.tilt=Math.max(-Math.PI/6,Math.min(Math.PI/6,this.tilt+angle));this.previewSignature='';this.update(0);}
   private request(id='preview-00000000'):BuildRequest {
-    return {requestId:id,worldKey:this.worldKey,definitionId:this.definitionId!,variant:this.variant,rotation:this.rotation,
+    return {requestId:id,worldKey:this.worldKey,definitionId:this.definitionId!,variant:this.variant,rotation:this.rotation,tilt:this.definitionId&&objectDefinition(this.definitionId).family==='floor'?this.tilt:undefined,
       eye:[...this.camera.position]as [number,number,number],direction:this.camera.forward,feet:[...this.camera.character.feet]as [number,number,number],standing:this.camera.character.grounded&&!this.camera.character.swimming};
   }
   get worldIdentity(){return this.worldKey;}
@@ -56,7 +57,7 @@ export class BuildingController {
     this.destruction.update();
     const now=performance.now(),look=`${this.camera.position.join(',')}/${this.camera.yaw}/${this.camera.pitch}`;
     if(look!==this.previousLook){this.previousLook=look;this.lastMotion=now;}
-    const id=this.definitionId,signature=`${look}/${id}/${this.variant}/${this.rotation}/${this.scene.revision}/${this.camera.character.grounded}/${this.connection}/${this.destruction.active}`;
+    const id=this.definitionId,signature=`${look}/${id}/${this.variant}/${this.rotation}/${this.tilt}/${this.scene.revision}/${this.camera.character.grounded}/${this.connection}/${this.destruction.active}`;
     if(signature!==this.previewSignature) {
       this.previewSignature=signature;this.preview=id&&!this.destruction.active&&this.camera.character.ready?solvePlacement(this.scene,this.request()):null;
       if(this.preview&&this.connection!=='Connected'){this.preview.valid=false;this.preview.reason=this.connection==='Connecting'?'Connecting building service':this.worldChanged?'World changed · refresh to build':'Building unavailable · retrying';}
@@ -79,10 +80,10 @@ export class BuildingController {
     const hint=document.getElementById('build-hint')!;hint.textContent=id?`${objectDefinition(id).label} · ${reason}${this.pending.size?' · Saving…':''}`:notice||'1–8 build · Q / E cycle · 9 empty hands';
     hint.classList.toggle('invalid',!!notice||!!this.preview&&!this.preview.valid);
     const controls=document.getElementById('build-controls')!;controls.hidden=!id;
-    controls.textContent='Q / E previous / next · Click place · Wheel fine rotate · T turn 90°';
+    controls.textContent=id&&objectDefinition(id).family==='floor'?'Q / E previous / next · Click place · T tilt 5° · Wheel tilt 1° · Up to 30°':'Q / E previous / next · Click place · Wheel fine rotate · T turn 90°';
     if(id&&objectDefinition(id).attachment)controls.textContent='Q / E cycle · Click attach · alignment follows the wall';
-    if(id&&['floor','roof'].includes(objectDefinition(id).family)&&this.preview?.object.support.kind!=='terrain')controls.textContent='Q / E cycle · Click connect · alignment follows the support';
-    if(id&&this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top')controls.textContent=objectDefinition(id).family==='roof'?'Q / E cycle · Click place · T switch roof side':'Q / E cycle · Click stack · rotation follows the wall below';
+    if(id&&['floor','roof'].includes(objectDefinition(id).family)&&this.preview?.object.support.kind!=='terrain')controls.textContent=objectDefinition(id).family==='floor'?'Q / E cycle · Click connect · T / Wheel tilt · follows support':'Q / E cycle · Click connect · alignment follows the support';
+    if(id&&this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top')controls.textContent=objectDefinition(id).family==='roof'?'Q / E cycle · Click place · T switch roof side':objectDefinition(id).family==='floor'?'Q / E cycle · Click stack · T / Wheel tilt':'Q / E cycle · Click stack · rotation follows the wall below';
     controls.textContent+=' \u00b7 Right-click cut/dismantle \u00b7 Hold R repair';controls.hidden=false;
     if(interaction){hint.textContent+=` · ${interaction}`;controls.hidden=false;}
   }
@@ -91,7 +92,7 @@ export class BuildingController {
     this.update(0);if(this.destruction.active||!this.preview)return;if(!this.preview.valid){this.notify(this.preview.reason);return;}
     this.noticeUntil=0;
     const request=this.request(crypto.randomUUID()),object={...this.preview.object,id:request.requestId};
-    request.expected={position:[...object.position],rotation:object.rotation,support:{...object.support}};
+    request.expected={position:[...object.position],rotation:object.rotation,support:{...object.support},normal:[...object.normal]};
     this.pending.set(object.id,object);this.scene.add(object);this.previewSignature='';
     // Keep optimistic placement visible while its ordered server command is checked.
     void (async()=>{

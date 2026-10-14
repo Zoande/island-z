@@ -56,14 +56,18 @@ update together. Rejecting an optimistic child restores the solid wall. Openings
 are centered, one per wall, to provide stable future construction sockets.
 Mounted torches require intact material beside an opening.
 
-Floor stamps lower original terrain by at most 0.4 m, never cumulatively. Grading
-uses the same global 2 m vertex samples for authoritative queries and rendered
-terrain, and a blended margin covers interpolation beneath the slab. Grade
-before LOD stitching; coarse edge samples must include the same floor stamps.
-Only affected chunk meshes and scenery anchors rebuild. Stamps are derived from
-saved floor objects and naturally disappear on optimistic rollback. They never
-alter the world seed or terrain generator version. Roofs need a wall or another
-roof; floor-supported walls align with their supporting floor edge.
+Floors follow the sampled hillside and can be tilted independently of their
+snapping yaw. T adds 5° and the wheel adds 1°, with a 30° control limit; the
+tilt axis follows the camera heading on terrain and the support wall when
+stacked. They chain edge-to-edge and can extend from a wall top like roofs.
+Floor colliders and render transforms use the saved surface normal. Movement
+can stand and walk along the inclined floor plane. Floor grading removes at
+most 1.25 m directly beneath its footprint, never cumulatively or by raising
+ground. Grading uses the same global terrain samples for authoritative queries
+and rendered terrain; floor removal clears its grading stamp. Floors break as
+one object like beds and cannot be repaired, while walls and roofs retain voxel damage. Roofs need a
+wall or another roof; floor-supported walls align with their supporting floor
+edge.
 
 Endpoint attachments preserve a joint position and rotate the child about it.
 Only a small contact region around that joint permits overlap with its parent;

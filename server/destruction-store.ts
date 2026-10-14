@@ -65,6 +65,7 @@ export class DestructionStore {
     const patch:WorldPatch={revision:this.revision+1,actionId:a.requestId,solids:[],removedBuilds:[],leveling:[],openings:[]};let record=old??solid.record??recordFor(solid.id,solid.prop,scene.rocks,solid.object);const terrainReads=new Map<string,number>();
     if(a.action==='dismantle'){
       record={...record,removed:true,revision:record.revision+1};patch.solids.push(record);patch.removedBuilds.push(record.id);
+      if(solid.object&&objectDefinition(solid.object.definitionId).family==='floor')patch.removedLeveling=[solid.object.id];
       const o=solid.object;if(o?.support.kind==='wall'&&['door','window'].includes(objectDefinition(o.definitionId).attachment??'')){patch.openings.push({id:o.support.id,kind:objectDefinition(o.definitionId).attachment as 'door'|'window'});const parent=scene.placed.get(o.support.id);if(parent){let r=scene.edits.get(parent.id)??recordFor(parent.id,parent.prop,scene.rocks,parent.object),v=new SparseVolume(r.source,r.volume);v.edit(openingBrush(r,objectDefinition(o.definitionId).attachment as 'door'|'window'));patch.solids.push({...r,opening:objectDefinition(o.definitionId).attachment as 'door'|'window',volume:v.state,revision:r.revision+1});}}
     }else if(record.prop.kind==='terrain'){
       const brush=actionBrush(record,hit.point,a.direction,false,brushSeed(a.requestId));
@@ -84,7 +85,6 @@ export class DestructionStore {
       if(a.action==='repair'&&record.opening&&!scene.placed.query(record.prop.x,record.prop.z,3).some(s=>s.object?.support.kind==='wall'&&s.object.support.id===record.id&&['door','window'].includes(objectDefinition(s.object.definitionId).attachment??''))){const opening=openingBrush(record,record.opening),box=opening.box!;let missing=false;for(let y=opening.center[1]-box[1]+.05;y<opening.center[1]+box[1]&&!missing;y+=.05)for(let x=-box[0]+.05;x<box[0]&&!missing;x+=.05)for(let z=-box[2]/2+.025;z<box[2]/2;z+=.025)if(volume.distance([x,y,z])>0){missing=true;break;}if(!missing){record={...record,opening:undefined};patch.openings.push({id:record.id,kind:null});}}
       patch.solids.push(record);
     }
-    if(record.object&&objectDefinition(record.object.definitionId).family==='floor')patch.leveling.push(record.object);
     if(a.action==='repair'){const start=performance.now();try{await this.support(patch,a);}catch(error){if(error instanceof Error&&error.message==='unsupported-repair')return fail('support','Repair from an edge connected to supported material');throw error;}this.measure('support',start);}
     await this.cookCollisions(patch.solids);
     const task=this.queue.then(async()=>{
@@ -143,8 +143,7 @@ export class DestructionStore {
     for(const [id,group]of grouped){const falling=group.filter(n=>!n.ground);if(!falling.length)continue;if(group.length===1&&group[0].record.fall)continue;const r=group[0].record,kept=group.filter(n=>n.ground);
       if(a.action==='repair'&&id===changed.id)throw new Error('unsupported-repair');
       const index=patch.solids.findIndex(s=>s.id===id),root={...r,removed:!kept.length,revision:r.revision+(id===changed.id?0:1),volume:{...r.volume,mask:kept.length?mergeMasks(kept.map(n=>n.component?.mask).filter(Boolean)as Record<string,number[]>[]):r.volume.mask}};
-      if(index>=0)patch.solids[index]=root;else patch.solids.push(root);if(root.removed)patch.removedBuilds.push(id);
-      if(r.object&&objectDefinition(r.object.definitionId).family==='floor')patch.leveling.push(r.object);
+      if(index>=0)patch.solids[index]=root;else patch.solids.push(root);if(root.removed){patch.removedBuilds.push(id);if(r.object&&objectDefinition(r.object.definitionId).family==='floor'){patch.removedLeveling??=[];patch.removedLeveling.push(id);}}
       for(let i=0;i<falling.length;i++){const n=falling[i],extent=n.bounds[1].map((v,k)=>v-n.bounds[0][k]);if(isTree(r.prop)&&Math.max(...extent)<.75)continue;const fragmentId=`fragment:${createHash('sha256').update(a.requestId+id+':'+i).digest('hex').slice(0,32)}`;parents?.set(fragmentId,id);patch.solids.push({...r,id:fragmentId,object:undefined,opening:undefined,fragmentOf:r.fragmentOf??id,fragmentBounds:n.component?.bounds??r.source.bounds,revision:1,volume:n.component?{...r.volume,mask:n.component.mask}:r.volume,fall:{velocity:r.fall?.velocity??[0,0,0],angular:r.fall?.angular??(isTree(r.prop)?[.15,0,.12]:[0,0,0]),started:Date.now(),persistent:isTree(r.prop),split:r.fall?.split}});}
     }
   }

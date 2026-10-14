@@ -1,9 +1,10 @@
 import type { MeshSurface } from './placement';
 import {rockSurface,type RockCollisionShape} from './rock-collision';
 import {wallContains,wallPush,wallSweep} from './wall-collision';
+import type {Point3} from './rocks';
 export interface CharacterInput { x:number; z:number; sprint:boolean; jump:boolean;swimVector?:[number,number,number] }
 export interface CharacterWater {level:number;kind:'ocean'|'lake'|'river';offshoreMeters?:number}
-export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall'|'fixture'|'player';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number} }
+export interface CharacterCollider { x:number; z:number; radius:number; bottom:number; top:number; kind:'tree'|'bush'|'rock'|'wall'|'floor'|'fixture'|'player';rock?:RockCollisionShape;wall?:{halfWidth:number;halfDepth:number;yaw:number};floorPlane?:{normal:Point3;point:Point3;xAxis:Point3;zAxis:Point3;halfWidth:number;halfDepth:number;thickness:number} }
 export interface CharacterEnvironment {
   surface(x:number,z:number,feetY?:number):MeshSurface|null;
   colliders(x:number,z:number):readonly CharacterCollider[];
@@ -73,7 +74,8 @@ export class Character {
         if(rock&&rock.height-drop>height){height=rock.height-drop;normal=stepNormal??rock.normal;}
       }
     }
-    for(const collider of colliders)if(collider.kind==='wall'&&collider.top>height&&this.feet[1]>=collider.top-CHARACTER.stepHeight-.002&&wallContains(collider,x,z,CHARACTER.radius*.95)) {height=collider.top;normal=[0,1,0];}
+    for(const collider of colliders)if(collider.kind==='wall'&&!collider.floorPlane&&collider.top>height&&this.feet[1]>=collider.top-CHARACTER.stepHeight-.002&&wallContains(collider,x,z,CHARACTER.radius*.95)) {height=collider.top;normal=[0,1,0];}
+    for(const collider of colliders)if(collider.floorPlane) {const f=collider.floorPlane,dx=x-f.point[0],dz=z-f.point[2],dy=this.feet[1]-f.point[1],alongX=dx*f.xAxis[0]+dy*f.xAxis[1]+dz*f.xAxis[2],alongZ=dx*f.zAxis[0]+dy*f.zAxis[1]+dz*f.zAxis[2];if(Math.abs(alongX)<=f.halfWidth+CHARACTER.radius&&Math.abs(alongZ)<=f.halfDepth+CHARACTER.radius){const plane=f.point[1]-(f.normal[0]*dx+f.normal[2]*dz)/f.normal[1];if(plane>height&&plane<=this.feet[1]+CHARACTER.stepHeight){height=plane;normal=f.normal;}}}
     return {height,normal};
   }
   update(dt:number,input:CharacterInput) {
@@ -110,7 +112,7 @@ export class Character {
   }
   private sweep(x:number,z:number,dx:number,dz:number,colliders:readonly CharacterCollider[]):[number,number] {
     const trees=colliders.filter(c=>(c.kind==='tree'||c.kind==='fixture'||c.kind==='player')&&this.feet[1]<c.top&&this.feet[1]+CHARACTER.height>c.bottom);
-    const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom&&!(this.grounded&&c.top<=this.feet[1]+CHARACTER.stepHeight&&c.top>=this.feet[1]));
+    const walls=colliders.filter(c=>c.kind==='wall'&&this.feet[1]<c.top-.001&&this.feet[1]+CHARACTER.height>c.bottom&&(!c.floorPlane?!(this.grounded&&c.top<=this.feet[1]+CHARACTER.stepHeight&&c.top>=this.feet[1]):this.floorIntersectsBody(c.floorPlane,x,z,this.feet[1],CHARACTER.height,CHARACTER.radius+Math.hypot(dx,dz))));
     for(let pass=0;pass<4;pass++)for(const c of trees) {
       const nx=x-c.x,nz=z-c.z,distance=Math.hypot(nx,nz),radius=c.radius+CHARACTER.radius+.001;
       if(distance<radius) {x+=(distance?nx/distance:1)*(radius-distance);z+=(distance?nz/distance:0)*(radius-distance);}
@@ -196,8 +198,13 @@ export class Character {
   }
   private ceiling(x:number,z:number,oldY:number,nextY:number,colliders:readonly CharacterCollider[]):number {
     if(nextY<=oldY)return nextY;
-    for(const c of colliders)if(c.kind==='wall'&&c.bottom>=oldY+CHARACTER.height-.002&&nextY+CHARACTER.height>c.bottom&&wallContains(c,x,z,CHARACTER.radius*.95)){nextY=Math.min(nextY,c.bottom-CHARACTER.height-.002);this.velocity[1]=Math.min(0,this.velocity[1]);}
+    for(const c of colliders)if(c.kind==='wall'&&!c.floorPlane&&c.bottom>=oldY+CHARACTER.height-.002&&nextY+CHARACTER.height>c.bottom&&wallContains(c,x,z,CHARACTER.radius*.95)){nextY=Math.min(nextY,c.bottom-CHARACTER.height-.002);this.velocity[1]=Math.min(0,this.velocity[1]);}
+    for(const c of colliders)if(c.floorPlane){const f=c.floorPlane,dx=x-f.point[0],dz=z-f.point[2],topY=f.point[1]-(f.normal[0]*dx+f.normal[2]*dz)/f.normal[1],bottomY=topY-f.thickness/f.normal[1],localX=dx*f.xAxis[0]+(bottomY-f.point[1])*f.xAxis[1]+dz*f.xAxis[2],localZ=dx*f.zAxis[0]+(bottomY-f.point[1])*f.zAxis[1]+dz*f.zAxis[2];if(Math.abs(localX)<=f.halfWidth+CHARACTER.radius&&Math.abs(localZ)<=f.halfDepth+CHARACTER.radius&&bottomY>=oldY+CHARACTER.height-.002&&nextY+CHARACTER.height>bottomY){nextY=Math.min(nextY,bottomY-CHARACTER.height-.002);this.velocity[1]=Math.min(0,this.velocity[1]);}}
     return nextY;
+  }
+  private floorIntersectsBody(f:NonNullable<CharacterCollider['floorPlane']>,x:number,z:number,feetY:number,height:number,radius:number):boolean {
+    const center:Point3=[f.point[0]-f.normal[0]*f.thickness/2,f.point[1]-f.normal[1]*f.thickness/2,f.point[2]-f.normal[2]*f.thickness/2],dot=(axis:Point3,y:number)=>axis[0]*(x-center[0])+axis[1]*(y-center[1])+axis[2]*(z-center[2]),overlap=(axis:Point3,half:number,margin:number)=>{const a=dot(axis,feetY),b=dot(axis,feetY+height),lo=Math.min(a,b)-margin,hi=Math.max(a,b)+margin;return lo<half-.001&&hi>-half+.001;};
+    return overlap(f.xAxis,f.halfWidth,radius*Math.hypot(f.xAxis[0],f.xAxis[2]))&&overlap(f.zAxis,f.halfDepth,radius*Math.hypot(f.zAxis[0],f.zAxis[2]))&&overlap(f.normal,f.thickness/2,0);
   }
   private swimStep(dt:number,input:CharacterInput,water:CharacterWater,oldGround:MeshSurface,colliders:readonly CharacterCollider[]) {
     const [x,y,z]=this.feet,vector=input.swimVector??[input.x,0,input.z],amount=Math.hypot(...vector);

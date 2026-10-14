@@ -59,6 +59,12 @@ the ocean. Exhaustion prevents sprinting and makes swimmers sink despite holding
 Space, so long open-ocean swims can end in drowning. Idle sinking is intentionally
 slower than diving. Vitals use elapsed time even if collision terrain is loading.
 Player movement and vitals are server-authoritative; no fall damage is added.
+During an outage, strict mode retains up to two seconds of input history and
+replays it from the server's last acknowledged checkpoint after reconnect. The
+server checks the sequence, elapsed-time budget, current collisions, player
+contacts, and vitals before accepting the resulting position. A stale or invalid
+resume returns the latest saved server position. Trust mode keeps its existing
+client-snapshot behavior.
 The server reads `ANTI_CHEAT_ENABLED` from its process environment or a local
 `.env` file. It defaults to `true`; set it to `false` only on a server where you
 trust every player. Trust mode relays bounded client movement snapshots and

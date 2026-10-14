@@ -1,7 +1,7 @@
 import {WorldGenerator,type Prop} from './world';
 import {rockPoints,ROCK_RINGS,ROCK_SEGMENTS,type Point3} from './rocks';
 import {orientation,rotate,embeddedRockHeight,type MeshSurface} from './placement';
-import {playerCollider} from './object-colliders';
+import {playerCollider,propBoxShapes} from './object-colliders';
 import {rockSurface} from './rock-collision';
 import {wallContains,wallRay} from './wall-collision';
 import type {CharacterCollider} from './character';
@@ -14,6 +14,7 @@ import {worldPoint,quaternion} from './destruction';
 import {naturalId,volumeRay,recordFor,treeSolidAssets,isTree,type SolidRecord,destructionRule} from './destruction';
 import {SparseVolume} from './volume';
 import {terrainId,terrainRecord} from './terrain-volume';
+import {FLOOR_MAX_GRADE_DEPTH,floorFootprintContains,floorPlaneHeight} from './build-terrain';
 export interface BuildSolid {id:string;prop:Prop;collider:CharacterCollider;shape:ConvexShape;colliders:CharacterCollider[];shapes:ConvexShape[];object?:BuildObject;record?:SolidRecord}
 export interface BuildHit {point:Point3;distance:number;solid?:BuildSolid}
 /** A renderer-independent canonical 2m terrain surface and bounded scenery cache.
@@ -28,7 +29,7 @@ export class BuildScene {
   private solidSources=new WeakMap<BuildSolid,SolidRecord>();private natural=new Map<string,BuildSolid[]>();private heights=new Map<string,number>();
   constructor(readonly world:WorldGenerator){this.rocks=Array.from({length:12},(_,i)=>rockPoints(world.config.seed,i));}
   private terrainVolumes=new WeakMap<SolidRecord,SparseVolume>();
-  terrainRecord(point:Point3):SolidRecord {return this.edits.get(terrainId(point))??terrainRecord(point,(x,z)=>this.terrain(x,z),(x,z)=>this.world.sample(x,z).weights);}
+  terrainRecord(point:Point3):SolidRecord {return this.edits.get(terrainId(point))??terrainRecord(point,(x,z)=>this.world.sample(x,z),(x,z)=>this.world.sample(x,z).weights);}
   groundDistance(point:Point3):number {
     const record=this.edits.get(terrainId(point));if(record){let volume=this.terrainVolumes.get(record);if(!volume){volume=new SparseVolume(record.source,record.volume,true);this.terrainVolumes.set(record,volume);}return volume.distance([point[0]-record.prop.x,point[1]-record.prop.y,point[2]-record.prop.z]);}
     const surface=this.terrain(point[0],point[2]);return (point[1]-surface.height)*surface.normal[1];
@@ -53,31 +54,31 @@ export class BuildScene {
     const dx=(u+v<=1?b-a:d-c)/2,dz=(u+v<=1?c-a:d-b)/2,length=Math.hypot(dx,1,dz);
     return {height:y,normal:[-dx/length,1/length,-dz/length]};
   }
-  /** A bounded cut, never a cumulative dig. Three metres of covered grid support
-   * prevent terrain triangles poking through rotated thin floor slabs. */
+  /** Floors can lower only the ground beneath their footprint. This is visual
+   * grading, independent of editable terrain voxels and mining edits. */
   grade(x:number,z:number,original:number):number {
     let result=original;
     for(const floor of [...this.floors.query(x,z,0),...this.permanentFloors.query(x,z,0)]){
       // Underground floors support a cave interior; they must not grade its roof.
-      if(original-floor.position[1]>.45)continue;
-      const slab=objectDefinition(floor.definitionId).slab!,dx=x-floor.position[0],dz=z-floor.position[2],c=Math.cos(floor.rotation),s=Math.sin(floor.rotation);
-      const distance=Math.hypot(Math.max(0,Math.abs(dx*c-dz*s)-slab.width/2),Math.max(0,Math.abs(dx*s+dz*c)-slab.depth/2));
-      if(distance>=4)continue;
-      const t=Math.max(0,Math.min(1,distance-3)),weight=1-t*t*(3-2*t);
-      result=Math.min(result,original-Math.min(.4,Math.max(0,original-floor.position[1]+.015))*weight);
+      const slab=objectDefinition(floor.definitionId).slab!;
+      if(!floorFootprintContains(floor.position,floor.normal,floor.rotation,slab.width,slab.depth,x,z))continue;
+      const plane=floorPlaneHeight(floor.position,floor.normal,x,z);
+      if(original-plane>FLOOR_MAX_GRADE_DEPTH)continue;
+      result=Math.min(result,Math.max(original-FLOOR_MAX_GRADE_DEPTH,plane-.015));
     }return result;
   }
   gradingSignature(x:number,z:number,extent:number):string{return [...this.floors.query(x+extent/2,z+extent/2,extent*.71+7),...this.permanentFloors.query(x+extent/2,z+extent/2,extent*.71+7)].filter(o=>Math.abs(o.position[0]-(x+extent/2))<extent/2+7&&Math.abs(o.position[2]-(z+extent/2))<extent/2+7).map(o=>JSON.stringify(o)).sort().join('|');}
-  floorAt(x:number,z:number):boolean {return this.floors.query(x,z,0).some(o=>{const a=objectDefinition(o.definitionId).slab!,dx=x-o.position[0],dz=z-o.position[2],c=Math.cos(o.rotation),s=Math.sin(o.rotation);return Math.abs(dx*c-dz*s)<=a.width/2+.1&&Math.abs(dx*s+dz*c)<=a.depth/2+.1;});}
+  floorAt(x:number,z:number):boolean {return this.floors.query(x,z,0).some(o=>{const a=objectDefinition(o.definitionId).slab!;return floorFootprintContains(o.position,o.normal,o.rotation,a.width+.2,a.depth+.2,x,z);});}
   solid(prop:Prop,id:string,object?:BuildObject):BuildSolid {
-    const boxes=boxColliders(prop),collider=boxes?.length?{kind:'wall' as const,x:prop.x,z:prop.z,bottom:Math.min(...boxes.map(b=>b.bottom)),top:Math.max(...boxes.map(b=>b.top)),radius:Math.max(...boxes.map(b=>Math.hypot(b.x-prop.x,b.z-prop.z)+b.radius)),wall:boxes[0].wall}:playerCollider(prop,this.rocks[prop.variant]);if(!collider)throw new Error('Object has no physical shape');
+    const boxes=boxColliders(prop),collider=boxes?.[0]?.floorPlane?{...boxes[0],kind:'floor' as const}:boxes?.length?{kind:'wall' as const,x:prop.x,z:prop.z,bottom:Math.min(...boxes.map(b=>b.bottom)),top:Math.max(...boxes.map(b=>b.top)),radius:Math.max(...boxes.map(b=>Math.hypot(b.x-prop.x,b.z-prop.z)+b.radius)),wall:boxes[0].wall}:playerCollider(prop,this.rocks[prop.variant]);if(!collider)throw new Error('Object has no physical shape');
     let shape:ConvexShape;
-    if(collider.wall){const w=collider.wall;shape=boxShape([prop.x,(collider.top+collider.bottom)/2,prop.z],[w.halfWidth,(collider.top-collider.bottom)/2,w.halfDepth],w.yaw);}
+    if(collider.kind==='floor')shape=propBoxShapes(prop)![0];
+    else if(collider.wall){const w=collider.wall;shape=boxShape([prop.x,(collider.top+collider.bottom)/2,prop.z],[w.halfWidth,(collider.top-collider.bottom)/2,w.halfDepth],w.yaw);}
     else if(prop.kind==='rock') {
       const q=orientation(prop.normal??[0,1,0],prop.rotation),points=this.rocks[prop.variant].map(p=>{const v=rotate([p[0]*prop.scale,p[1]*prop.scale,p[2]*prop.scale],q);return [v[0]+prop.x,v[1]+prop.y,v[2]+prop.z] as Point3;});
       shape={kind:'hull',points,center:[prop.x,(collider.bottom+collider.top)/2,prop.z]};
     }else shape={kind:'cylinder',center:[prop.x,(collider.top+collider.bottom)/2,prop.z],radius:collider.radius,halfHeight:(collider.top-collider.bottom)/2};
-    let colliders=boxes??[collider],shapes=boxes?boxes.map(c=>boxShape([c.x,(c.bottom+c.top)/2,c.z],[c.wall!.halfWidth,(c.top-c.bottom)/2,c.wall!.halfDepth],c.wall!.yaw)):[shape];
+    let colliders=boxes??[collider],shapes=boxes?(propBoxShapes(prop)??boxes.map(c=>boxShape([c.x,(c.bottom+c.top)/2,c.z],[c.wall!.halfWidth,(c.top-c.bottom)/2,c.wall!.halfDepth],c.wall!.yaw))):[shape];
     const cooked=this.damageCollision.get(id);if(cooked&&cooked.revision===this.edits.get(id)?.revision&&prop.aperture===this.placed.get(id)?.prop.aperture){shapes=cooked.shapes;colliders=cooked.colliders;}return {id,prop,collider,shape,colliders,shapes,object,record:this.edits.get(id)};
   }
   naturalAt(x:number,z:number,radius:number):BuildSolid[] {
@@ -105,7 +106,7 @@ export class BuildScene {
   add(object:BuildObject){const previous=this.placed.get(object.id)?.object,solid=this.solid(buildProp(object),object.id,object);this.placed.insert(object.id,solid,solid.prop.x,solid.prop.z,solid.collider.radius);
     if(objectDefinition(object.definitionId).family==='floor'&&JSON.stringify(previous)!==JSON.stringify(object)){this.floors.insert(object.id,object,object.position[0],object.position[2],7);this.terrainRevision++;this.natural.clear();}
     this.refreshWall(object.id);if(object.support.kind==='wall')this.refreshWall(object.support.id);this.revision++;return this.placed.get(object.id)!;}
-  remove(id:string,permanent=false){const object=this.placed.get(id)?.object;if(object){if(permanent&&objectDefinition(object.definitionId).family==='floor')this.keepLeveling(object);if(permanent&&object.support.kind==='wall'&&objectDefinition(object.definitionId).attachment&&['door','window'].includes(objectDefinition(object.definitionId).attachment!))this.openings.set(object.support.id,objectDefinition(object.definitionId).attachment as 'door'|'window');this.placed.remove(id);if(objectDefinition(object.definitionId).family==='floor'){this.floors.remove(id);this.terrainRevision++;this.natural.clear();}if(object.support.kind==='wall')this.refreshWall(object.support.id);this.revision++;}}
+  remove(id:string,permanent=false){const object=this.placed.get(id)?.object;if(object){if(permanent&&object.support.kind==='wall'&&objectDefinition(object.definitionId).attachment&&['door','window'].includes(objectDefinition(object.definitionId).attachment!))this.openings.set(object.support.id,objectDefinition(object.definitionId).attachment as 'door'|'window');this.placed.remove(id);if(objectDefinition(object.definitionId).family==='floor'){this.floors.remove(id);this.forgetLeveling(id);this.terrainRevision++;this.natural.clear();}if(object.support.kind==='wall')this.refreshWall(object.support.id);this.revision++;}}
   keepLeveling(object:BuildObject){if(JSON.stringify(this.leveling.get(object.id))===JSON.stringify(object))return;this.leveling.set(object.id,object);this.permanentFloors.insert(object.id,object,object.position[0],object.position[2],7);this.terrainRevision++;this.natural.clear();}
   forgetLeveling(id:string){if(this.leveling.delete(id)){this.permanentFloors.remove(id);this.terrainRevision++;}}
   setDamageCollision(record:SolidRecord,boxes:CollisionBox[]){const shapes:ConvexShape[]=[],colliders:CharacterCollider[]=[];for(const box of boxes){const points=[0,1,2,3,4,5,6,7].map(n=>worldPoint(record,box.center.map((v,k)=>v+box.half[k]*(n&(1<<k)?1:-1))as Point3)),center=worldPoint(record,box.center);shapes.push({kind:'hull',points,center});const q=quaternion(record),upright=Math.abs(q[0])+Math.abs(q[2])<.001;if(upright)colliders.push({kind:'wall',x:center[0],z:center[2],bottom:center[1]-box.half[1]*record.prop.scale,top:center[1]+box.half[1]*record.prop.scale,radius:Math.hypot(box.half[0],box.half[2])*record.prop.scale,wall:{halfWidth:box.half[0]*record.prop.scale,halfDepth:box.half[2]*record.prop.scale,yaw:2*Math.atan2(q[1],q[3])}});}this.damageCollision.set(record.id,{revision:record.revision,shapes,colliders});const placed=this.placed.get(record.id);if(placed){placed.shapes=shapes;placed.colliders=colliders;}this.revision++;}
@@ -119,7 +120,9 @@ export class BuildScene {
       if(solid.record){const start=Math.min(Number.isFinite(feetY)?feetY+.5:solid.collider.top+.5,solid.collider.top+.5),hit=volumeRay(solid.record,[x,start,z],[0,-1,0],Math.max(0,start-height));if(hit)height=Math.max(height,hit.point[1]);continue;}
       for(const c of solid.colliders){
       if(c.kind==='rock')height=Math.max(height,rockSurface(c,x,z)?.height??height);
-      if(c.kind==='wall'&&c.top<=feetY+.5&&wallContains(c,x,z,.32))height=Math.max(height,c.top);}
+      if(c.kind==='wall'&&!c.floorPlane&&c.top<=feetY+.5&&wallContains(c,x,z,.32))height=Math.max(height,c.top);
+      if(c.floorPlane&&solid.object){const slab=objectDefinition(solid.object.definitionId).slab!,o=solid.object;if(floorFootprintContains(o.position,o.normal,o.rotation,slab.width+.64,slab.depth+.64,x,z)){const f=c.floorPlane,plane=f.point[1]-(f.normal[0]*(x-f.point[0])+f.normal[2]*(z-f.point[2]))/f.normal[1];if(plane<=feetY+.5)height=Math.max(height,plane);}}
+      }
     }
     return height;
   }
@@ -157,6 +160,7 @@ function triangleRay(o:Point3,d:Point3,a:Point3,b:Point3,c:Point3):number|null {
   const t=(vx*qx+vy*qy+vz*qz)/det;return t>=0?t:null;
 }
 export function solidRay(s:BuildSolid,o:Point3,d:Point3,limit:number):number|null {
+  if(s.collider.kind==='floor'){const points=(s.shape as Extract<ConvexShape,{kind:'hull'}>).points,faces=[[0,1,3],[0,3,2],[4,6,7],[4,7,5],[0,4,5],[0,5,1],[2,3,7],[2,7,6],[0,2,6],[0,6,4],[1,5,7],[1,7,3]];let nearest=limit+1;for(const f of faces){const t=triangleRay(o,d,points[f[0]],points[f[1]],points[f[2]]);if(t!==null&&t<nearest)nearest=t;}return nearest<=limit?nearest:null;}
   if(s.collider.kind==='wall'){const hits=s.colliders.map(c=>wallRay(c,o,d,limit)).filter((t):t is number=>t!==null);return hits.length?Math.min(...hits):null;}
   if(s.collider.kind!=='rock')return cylinderRay(s.collider,o,d,limit);
   const points=(s.shape as Extract<ConvexShape,{kind:'hull'}>).points;let nearest=limit+1;

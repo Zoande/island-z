@@ -39,6 +39,12 @@ export function rotate(point: Point3, q: Quaternion): Point3 {
   const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
   return [x + qw * tx + qy * tz - qz * ty, y + qw * ty + qz * tx - qx * tz, z + qw * tz + qx * ty - qy * tx];
 }
+/** Add user-controlled floor pitch around a stable horizontal axis. */
+export function floorTiltNormal(base:Point3,heading:Point3,angle:number,wallYaw?:number):Point3 {
+  const headingLength=Math.hypot(heading[0],heading[2]),axis:Point3=wallYaw===undefined?headingLength>1e-8?[heading[2]/headingLength,0,-heading[0]/headingLength]:[1,0,0]:[Math.cos(wallYaw),0,-Math.sin(wallYaw)];
+  const c=Math.cos(angle),s=Math.sin(angle),cross:Point3=[axis[1]*base[2]-axis[2]*base[1],axis[2]*base[0]-axis[0]*base[2],axis[0]*base[1]-axis[1]*base[0]],dot=axis[0]*base[0]+axis[1]*base[1]+axis[2]*base[2],n:Point3=[base[0]*c+cross[0]*s+axis[0]*dot*(1-c),base[1]*c+cross[1]*s+axis[1]*dot*(1-c),base[2]*c+cross[2]*s+axis[2]*dot*(1-c)],m=Math.hypot(...n)||1;
+  return n.map(v=>v/m)as Point3;
+}
 /** Support the entire footprint, then bury it a little so there is no visible air gap. */
 export function embeddedRockHeight(points: Point3[], x: number, z: number, scale: number, rotation: Quaternion, surface: (x: number, z: number) => number): number {
   let support = -Infinity;

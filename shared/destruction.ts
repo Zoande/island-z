@@ -8,7 +8,7 @@ import {OPENINGS} from './build-parts';
 export const DESTRUCTION={reach:4,intervalMs:250,playerPower:1,repairRadius:.16,repairDepth:.12,version:1};
 export interface SolidRecord {id:string;prop:Prop;source:SolidSource;volume:VolumeState;revision:number;removed?:boolean;object?:BuildObject;opening?:'door'|'window';fragmentOf?:string;fragmentBounds?:[Point3,Point3];pose?:{position:Point3;rotation:[number,number,number,number]};fall?:{velocity:Point3;angular:Point3;started:number;settled?:number;persistent:boolean;split?:boolean;impactSpeed?:number};}
 export interface WorldAction {action:'cut'|'repair'|'dismantle';requestId:string;worldKey:string;sessionId:string;targetId:string;targetRevision:number;eye:Point3;direction:Point3;feet:Point3;prediction?:string;actionTime?:number}
-export interface WorldPatch {revision:number;objects?:BuildObject[];actionId?:string;solids:SolidRecord[];removedBuilds:string[];leveling:BuildObject[];openings:{id:string;kind:'door'|'window'|null}[]}
+export interface WorldPatch {revision:number;objects?:BuildObject[];actionId?:string;solids:SolidRecord[];removedBuilds:string[];leveling:BuildObject[];/** Remove a previously published floor grade. Used when a whole floor is broken. */removedLeveling?:string[];openings:{id:string;kind:'door'|'window'|null}[]}
 export type ActionResult={ok:true;patch:WorldPatch;requestId:string}|{ok:false;code:string;error:string};
 export type ActionAcknowledgement={ok:true;requestId:string;ack:{revision:number;targetId:string;targetRevision:number;prediction:string}};
 export type ActionReply=ActionResult|ActionAcknowledgement;

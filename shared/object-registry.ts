@@ -38,7 +38,7 @@ definitions.push(
   ...(['door-wood','door-reinforced']as const).map(id=>({id,label:id==='door-wood'?'Timber door':'Braced door',family:'attachment' as const,icon:'door',variants:one(id),attachment:'door' as const,boxes:[{center:[0,1.14,0]as Point3,size:[1.10,2.28,.08]as Point3}],asset:'blender' as const})),
   {id:'window',label:'Window',family:'attachment',icon:'window',variants:one('window'),attachment:'window',supportSamples:[[-.65,.2,0],[-.65,.8,0],[.65,.2,0],[.65,.8,0],[0,0,0],[0,1.05,0]],boxes:[{center:[-.60,.525,0],size:[.10,1.05,.14]},{center:[.60,.525,0],size:[.10,1.05,.14]},{center:[0,.05,0],size:[1.3,.10,.14]},{center:[0,1,0],size:[1.3,.10,.14]},{center:[0,.525,0],size:[.045,.95,.07]}],asset:'blender'},
 );
-for(const d of definitions){const voxel=['rock','tree','wall','floor','roof'].includes(d.family);Object.assign(d,{destruction:{mode:voxel?'voxel':'whole',hardness:d.family==='rock'||d.id.includes('stone')?2.5:d.id.includes('brick')?2:1,repairable:['wall','floor','roof'].includes(d.family),tree:d.family==='tree'}});}
+for(const d of definitions){const voxel=['rock','tree','wall','roof'].includes(d.family);Object.assign(d,{destruction:{mode:voxel?'voxel':'whole',hardness:d.family==='rock'||d.id.includes('stone')?2.5:d.id.includes('brick')?2:1,repairable:['wall','roof'].includes(d.family),tree:d.family==='tree'}});}
 /** Stable save/network IDs. New object types register dimensions, assets and rules here. */
 export const objectRegistry:ReadonlyMap<string,ObjectDefinition>=new Map(definitions.map(definition=>[definition.id,Object.freeze({...definition,variants:Object.freeze(definition.variants.map(v=>Object.freeze(v))),wall:definition.wall&&Object.freeze(definition.wall),slab:definition.slab&&Object.freeze(definition.slab),boxes:definition.boxes&&Object.freeze(definition.boxes.map(b=>Object.freeze({center:Object.freeze(b.center)as unknown as Point3,size:Object.freeze(b.size)as unknown as Point3}))),fixture:definition.fixture&&Object.freeze(definition.fixture),light:definition.light&&Object.freeze({...definition.light,color:Object.freeze(definition.light.color),offset:definition.light.offset&&Object.freeze(definition.light.offset)})})]));
 export const hotbarSlots:readonly(readonly string[]|null)[]=Object.freeze([
@@ -56,7 +56,9 @@ export interface BuildRequest {
   worldKey?:string;
   requestId:string;definitionId:string;variant:number;rotation:number;
   eye:Point3;direction:Point3;feet:Point3;standing:boolean;
-  expected?:{position:Point3;rotation:number;support:BuildSupport};
+  /** Additional tilt around the deterministic placement axis; floor-only, radians. */
+  tilt?:number;
+  expected?:{position:Point3;rotation:number;support:BuildSupport;normal?:Point3};
 }
 export type BuildResult={ok:true;object:BuildObject;revision:number}|{ok:false;error:string;code:string};
 export const BUILD_REACH=10,BUILD_CELL=512,SNAP_DISTANCE=.8;
@@ -74,6 +76,7 @@ export function validBuildObject(value:unknown):value is BuildObject {
   const vector=(v:unknown)=>Array.isArray(v)&&v.length===3&&v.every(n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<1e9);
   return !!definition&&Number.isInteger(o.variant)&&!!definition.variants[o.variant]&&vector(o.position)&&vector(o.normal)
     &&Math.abs(Math.hypot(...o.normal)-1)<.001&&Number.isFinite(o.rotation)&&!!o.support
+    &&(definition.family!=='floor'||o.normal[1]>=.5)
     &&(o.state===undefined||!!o.state&&typeof o.state.open==='boolean'&&definition.attachment==='door')
     &&(o.support.kind==='terrain'||o.support.kind==='rock'&&typeof o.support.id==='string'||['wall','floor','roof'].includes(o.support.kind)&&'id'in o.support&&typeof o.support.id==='string'&&'socket'in o.support&&['left','right','top','front','back','opening','mount'].includes(o.support.socket));
 }
