@@ -46,4 +46,15 @@ describe('remote multiplayer client',()=>{
     client.receive({type:'welcome',message:{state:{},time:0}});
     expect(client.renderer.remotePlayers).toEqual([]);expect(client.remoteTimeline.sample(1000)).toEqual([]);expect(client.connected).toBe(true);
   });
+  it('carries a late remote snapshot forward for at most 100 ms without drifting vertically on ground',()=>{
+    const timeline=new RemotePlayerTimeline();
+    const at=(x:number)=>[{id:'peer',nickname:'Peer',feet:[x,2,0] as [number,number,number],velocity:[5,-3,0] as [number,number,number],grounded:true,respawns:0}];
+    timeline.push(0,1000,at(0));timeline.push(50,1050,at(.25));
+    expect(timeline.sample(1150)[0].feet).toEqual([.25,2,0]);
+    expect(timeline.sample(1200)[0].feet).toEqual([.5,2,0]);
+    expect(timeline.sample(1250)[0].feet).toEqual([.75,2,0]);
+    expect(timeline.sample(10000)[0].feet).toEqual([.75,2,0]);
+    timeline.push(100,10000,[{...at(100)[0],respawns:1}]);
+    expect(timeline.sample(10100)[0].feet).toEqual([100,2,0]);
+  });
 });
