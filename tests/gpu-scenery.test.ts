@@ -1,5 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {gpuSceneryReference,type GpuSceneryCandidate,type GpuSceneryConfig,type GpuSceneryFrame} from '../client/gpu-scenery';
+import {lodEntries,rangeFade} from '../client/lod';
 
 const planes=(minX=-100,maxX=100,minY=-100,maxY=100,minZ=-100,maxZ=100)=>new Float32Array([
   1,0,0,-minX,-1,0,0,maxX,0,1,0,-minY,0,-1,0,maxY,0,0,1,-minZ,0,0,-1,maxZ,
@@ -18,6 +19,11 @@ describe('GPU scenery selection reference',()=>{
     const incoming=gpuSceneryReference(points,config({level:1,boundaries:boundary}),f);
     expect(outgoing.map(value=>[value.index,value.record[8],value.record[9]])).toEqual([[0,0,1],[1,.5,1]]);
     expect(incoming.map(value=>[value.index,value.record[8],value.record[9]])).toEqual([[0,0,0],[1,.5,0],[2,1,0]]);
+    for(const level of [0,1]) {
+      const actual=gpuSceneryReference(points,config({level,boundaries:boundary}),f).map(value=>[value.index,level,value.record[8],value.record[9]]);
+      const oracle=points.flatMap((value,index)=>lodEntries(value.horizontal[0],boundary).filter(entry=>entry.level===level).map(entry=>[index,level,entry.threshold,entry.outgoing?1:0]));
+      expect(actual).toEqual(oracle);
+    }
   });
 
   it('uses view frustum for view instances and light frustum for offscreen shadow casters',()=>{
@@ -51,5 +57,40 @@ describe('GPU scenery selection reference',()=>{
     expect(gpuSceneryReference([],config(),frame())).toEqual([]);
     const short=candidate(80,{range:50,maxRange:500}),long=candidate(80,{range:100,maxRange:500});
     expect(gpuSceneryReference([short,long],config({range:200}),frame()).map(value=>value.index)).toEqual([1]);
+  });
+
+  it('uses per-candidate scaled-prop range and LOD overrides instead of batch defaults',()=>{
+    const candidates=[
+      candidate(85,{range:120,boundaries:[{distance:100,width:40}]}),
+      candidate(140,{range:300,boundaries:[{distance:200,width:40},{distance:400,width:60}]}),
+    ];
+    const result=gpuSceneryReference(candidates,config({range:50,boundaries:[{distance:20,width:10}]}),frame([0,0,0],planes(0,200,-10,10,-10,10)));
+    expect(result.map(value=>value.index)).toEqual([0,1]);
+    expect(result[0].record[8]).toBeCloseTo(.04296875,6);
+    expect(result[0].record[9]).toBe(1);
+    expect(result[0].record[10]).toBeCloseTo(rangeFade(85,120),6);
+    expect(result[1].record[8]).toBe(1);
+    expect(result[1].record[10]).toBe(1);
+  });
+
+  it('maps shadow mesh levels through the configured LOD offset',()=>{
+    const boundaries=[{distance:100,width:20}],candidates=[90,100,110].map(x=>candidate(x));
+    const f=frame([0,0,0],planes(-200,200,-20,20,-20,20),planes(-200,200,-20,20,-20,20),200);
+    const level1=gpuSceneryReference(candidates,config({mode:'shadow',level:1,boundaries,shadowLodOffset:1}),f);
+    const level2=gpuSceneryReference(candidates,config({mode:'shadow',level:2,boundaries,shadowLodOffset:1}),f);
+    expect(level1.map(value=>[value.index,value.record[8],value.record[9]])).toEqual([[0,0,1],[1,.5,1]]);
+    expect(level2.map(value=>[value.index,value.record[8],value.record[9]])).toEqual([[0,0,0],[1,.5,0],[2,1,0]]);
+  });
+
+  it('allows built tree LOD2 fade and keeps natural tree coverage opaque',()=>{
+    const built=candidate(400,{range:500,boundaries:[{distance:100,width:20},{distance:220,width:40}]}),builtResult=gpuSceneryReference([built],config({level:2,boundaries:[{distance:100,width:20},{distance:220,width:40}],range:500,tree:false}),frame([0,0,0],planes(0,500,-10,10,-10,10)));
+    expect(builtResult).toHaveLength(1);expect(builtResult[0].record[8]).toBe(1);expect(builtResult[0].record[10]).toBeCloseTo(rangeFade(400,500),6);expect(builtResult[0].record[10]).toBeLessThan(1);
+    const natural=candidate(400,{natural:true,range:500,boundaries:[{distance:100,width:20},{distance:220,width:40},{distance:400,width:160}]}),naturalResult=gpuSceneryReference([natural],config({level:2,boundaries:natural.boundaries,range:500,tree:true}),frame([0,0,0],planes(0,500,-10,10,-10,10)));
+    expect(naturalResult).toHaveLength(1);expect(naturalResult[0].record[8]).toBeCloseTo(.5,5);expect(naturalResult[0].record[9]).toBe(1);expect(naturalResult[0].record[10]).toBe(1);
+  });
+
+  it('uses inclusive lower and exclusive upper distance-bin edges',()=>{
+    const values=[99,100,249,250].map(x=>candidate(x)),binConfig=config({range:300,distanceMin:100,distanceMax:250});
+    expect(gpuSceneryReference(values,binConfig,frame([0,0,0],planes(0,300,-10,10,-10,10))).map(value=>value.index)).toEqual([1,2]);
   });
 });

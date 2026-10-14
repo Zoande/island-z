@@ -32,12 +32,14 @@ import { FrameProfiler,GpuProfiler } from './performance';
 import {TreeImpostors,impostorMesh,impostorShader,modelBounds,type ModelBounds} from './impostors';
 import {frustumPlanes,sphereInFrustum,indexChunkNeighborhoods} from './culling';
 import {lodEntries,rangeFade,type LodBoundary} from './lod';
+import {GpuSceneryCuller,createGpuSceneryFrameBuffer,writeGpuSceneryFrame,type GpuSceneryBatch,type GpuSceneryCandidate,type GpuSceneryConfig} from './gpu-scenery';
 import {qualities,type Quality,type QualitySettings} from './quality';
 
 interface Mesh { vertex: GPUBuffer; index: GPUBuffer; indexFormat:GPUIndexFormat; count: number; material: string;borrowed?:boolean;clipGroup?:GPUBindGroup }
 interface DamageDraw {terrainInstance?:GPUBuffer;record:SolidRecord;meshes:Mesh[];lods:Mesh[][];owns:boolean;prediction?:{base?:DamageDraw;regions:VolumeRegion[];signature:string;buffer:GPUBuffer}}
 interface Resident { mining?:{signature:string;buffer:GPUBuffer;group:GPUBindGroup};miningRevision?:string;data: ChunkData; mesh: Mesh; water?: Mesh; instance: GPUBuffer; lastUsed: number; seam?: string; placedProps?: Prop[]; colliders?:CharacterCollider[]; surfaceVertices?: Float32Array; support?: string;renderBounds?:[number,number] }
 interface Batch { mesh: Mesh; buffer: GPUBuffer; capacity: number; instances: Float32Array; count:number; shadow:boolean;nearest:number }
+interface GpuSceneryDraw {mesh:Mesh;batch:GpuSceneryBatch;shadow:boolean;bin:number;level:number;group:string}
 interface PropRenderInfo {tree:boolean;radius:number;centerY:number;range:number;boundaries:LodBoundary[];shadowBoundaries:LodBoundary[];meshes:Mesh[][]}
 const vertexLayout: GPUVertexBufferLayout = { arrayStride: VERTEX_FLOATS * 4, attributes: [
   { shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x3' },
@@ -62,6 +64,18 @@ export class IslandRenderer {
   private nearBatches=new Map<Mesh,Batch>();
   private middleBatches=new Map<Mesh,Batch>();
   frontToBack=true;
+  /** CPU control path remains available for visual comparison and diagnostics. */
+  gpuCullingEnabled=true;
+  private gpuCuller?:GpuSceneryCuller;
+  private gpuFrame?:GPUBuffer;
+  private gpuOrigin:Point3=[NaN,0,NaN];
+  private gpuNaturalSignature='';private gpuBuiltSignature='';
+  private gpuNaturalDraws:GpuSceneryDraw[]=[];private gpuBuiltDraws:GpuSceneryDraw[]=[];
+  private gpuActive=false;private gpuDraws:GpuSceneryDraw[]=[];private gpuBatches:GpuSceneryBatch[]=[];
+  private gpuRebuilds=0;
+  private gpuStatsBusy=false;private gpuStatsBuffer?:GPUBuffer;
+  private gpuStats={view:0,shadow:0,viewTriangles:0,shadowTriangles:0,frame:-1};
+
   private viewBatchGroups=[this.nearBatches,this.middleBatches,this.batches];
   private farBatches=new Map<Mesh,Batch>();
   private farChunks=new WeakMap<Prop[],Map<Mesh,{props:Prop[];values:Float32Array}>>();
@@ -162,9 +176,9 @@ export class IslandRenderer {
     result.push(...this.buildScene?.colliders(x,z)??[]);
     return result;
   }
-  get resources() { return { chunks: this.chunks.size, textures: this.textures.length + this.targets.length + 2+(this.impostors?2:0), instanceBatches: this.viewBatchGroups.reduce((n,m)=>n+m.size,0)+this.shadowBatches.size+this.farBatches.size, drawCalls: this.drawCalls, triangles: this.triangles,
-    sceneryInstances:this.visibleBatches.reduce((n,b)=>n+b.count,0),distantTreeInstances:[...this.farBatches.values()].reduce((n,b)=>n+b.count,0),shadowInstances:this.casterBatches.reduce((n,b)=>n+b.count,0),
-    sceneSceneryTriangles:this.visibleBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),shadowSceneryTriangles:this.casterBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0),pointLights:this.activePointLights,damagedObjects:this.damaged.size }; }
+  get resources() { return { chunks: this.chunks.size, textures: this.textures.length + this.targets.length + 2+(this.impostors?2:0), instanceBatches: this.viewBatchGroups.reduce((n,m)=>n+m.size,0)+this.shadowBatches.size+this.farBatches.size+this.gpuNaturalDraws.length+this.gpuBuiltDraws.length, drawCalls: this.drawCalls, triangles: this.triangles,
+    sceneryInstances:this.visibleBatches.reduce((n,b)=>n+b.count,0)+(this.gpuActive?this.gpuStats.view:0),distantTreeInstances:[...this.farBatches.values()].reduce((n,b)=>n+b.count,0),shadowInstances:this.casterBatches.reduce((n,b)=>n+b.count,0)+(this.gpuActive?this.gpuStats.shadow:0),
+    sceneSceneryTriangles:this.visibleBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0)+(this.gpuActive?this.gpuStats.viewTriangles:0),shadowSceneryTriangles:this.casterBatches.reduce((n,b)=>n+b.count*b.mesh.count/3,0)+(this.gpuActive?this.gpuStats.shadowTriangles:0),pointLights:this.activePointLights,damagedObjects:this.damaged.size,gpuCulling:Number(this.gpuActive),gpuSceneryBatches:this.gpuNaturalDraws.length+this.gpuBuiltDraws.length,gpuSceneryRebuilds:this.gpuRebuilds,gpuCountSampleAge:this.gpuStats.frame<0?-1:this.frameNumber-this.gpuStats.frame }; }
   get estimatedGpuBytes() {
     const buffers=new Set<GPUBuffer>([this.uniform,this.lightingUniform,this.postUniform,this.farUniform,this.oceanInstance,this.previewInstance,this.previewUniform,...this.materialUniforms].filter(Boolean));
     const add=(mesh?:Mesh)=>{if(mesh){buffers.add(mesh.vertex);buffers.add(mesh.index);}};
@@ -173,7 +187,7 @@ export class IslandRenderer {
     const textures=[...this.textures,...this.targets,this.shadowTexture,this.staticShadowTexture,this.impostors?.texture,this.impostors?.surfaceTexture].filter(Boolean);
     let bytes=[...buffers].reduce((n,b)=>n+b.size,0);
     for(const t of textures)for(let level=0;level<t.mipLevelCount;level++)bytes+=Math.max(1,t.width>>level)*Math.max(1,t.height>>level)*t.depthOrArrayLayers*(t.format==='rgba16float'?8:4);
-    return bytes;
+    return bytes+(this.gpuCuller?.estimatedBytes??0)+(this.gpuFrame?.size??0);
   }
   private assertActive() {if(this.disposed)throw new DOMException('Renderer initialization was cancelled.','AbortError');}
   private upload(data: Float32Array | Uint32Array | Uint16Array, usage: GPUBufferUsageFlags, label: string): GPUBuffer {
@@ -197,6 +211,8 @@ export class IslandRenderer {
     const timestamp=adapter.features.has('timestamp-query');
     this.device = await adapter.requestDevice({requiredFeatures:timestamp?['timestamp-query']:[]});
     if(this.disposed){this.device.destroy();this.assertActive();}
+    this.gpuCuller=await GpuSceneryCuller.create(this.device);this.assertActive();
+    this.gpuFrame=createGpuSceneryFrameBuffer(this.device);
     this.profiler.gpuSupported=timestamp;if(timestamp)this.gpuProfiler=new GpuProfiler(this.device,this.profiler);
     this.device.addEventListener('uncapturederror', event => { if(this.disposed)return;const message = event.error.message; this.errors.push(message); console.error('WebGPU:', message); this.onFatal(`Rendering failed: ${message}`); });
     void this.device.lost.then(info => { if (!this.disposed) this.onFatal(`Graphics device lost: ${info.message || info.reason}. Retry to rebuild the viewer.`); });
@@ -515,6 +531,72 @@ export class IslandRenderer {
   }
   updateDamagedPose(record:SolidRecord){const d=this.damaged.get(record.id);if(d){d.record=record;this.scenerySignature='';}}
   removeDamagedMesh(id:string){const d=this.damaged.get(id);if(!d)return;this.disposeDamage(d);this.damaged.delete(id);this.damageGeometryRevision++;this.scenerySignature='';}
+  /** Profiling-only asynchronous count sampling; rendering never waits for it. */
+  private sampleGpuScenery(encoder:GPUCommandEncoder,draws:GpuSceneryDraw[]):(()=>void)|undefined {
+    if(!this.profiler.enabled||this.gpuStatsBusy||this.frameNumber%30!==0||!draws.length)return;
+    const buffer=this.device.createBuffer({label:'Profile scenery counts',size:draws.length*4,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+    this.gpuStatsBusy=true;this.gpuStatsBuffer=buffer;const frame=this.frameNumber;
+    draws.forEach((draw,i)=>encoder.copyBufferToBuffer(draw.batch.indirect,4,buffer,i*4,4));
+    return ()=>{void buffer.mapAsync(GPUMapMode.READ).then(()=>{
+      if(this.disposed)return;
+      const counts=new Uint32Array(buffer.getMappedRange()),stats={view:0,shadow:0,viewTriangles:0,shadowTriangles:0,frame};
+      draws.forEach((draw,i)=>{if(draw.shadow){stats.shadow+=counts[i];stats.shadowTriangles+=counts[i]*draw.mesh.count/3;}else{stats.view+=counts[i];stats.viewTriangles+=counts[i]*draw.mesh.count/3;}});
+      this.gpuStats=stats;buffer.unmap();
+    }).catch(()=>{}).finally(()=>{buffer.destroy();if(this.gpuStatsBuffer===buffer)this.gpuStatsBuffer=undefined;this.gpuStatsBusy=false;});};
+  }
+  private prepareGpuScenery(drawn:Resident[],signature:string,damageVisibility:string,camera:PlayerCamera) {
+    const origin:Point3=[Math.floor(camera.position[0]/1024)*1024,0,Math.floor(camera.position[2]/1024)*1024];
+    const originChanged=origin[0]!==this.gpuOrigin[0]||origin[2]!==this.gpuOrigin[2];
+    this.gpuOrigin=origin;
+    const naturalSignature=`${signature}/${this.buildScene?.terrainRevision??0}/${damageVisibility}/${this.propInfoSignature}/${this.frontToBack}/${origin}`;
+    const builtSignature=`${this.buildScene?.revision??0}/${damageVisibility}/${this.propInfoSignature}/${this.frontToBack}/${origin}`;
+    const settings=qualities[this.quality];
+    const rebuild=(old:GpuSceneryDraw[],natural:boolean)=>{
+      // Candidate data is shared across material parts, LODs and distance bins.
+      const groups=new Map<string,{meshes:Mesh[][];tree:boolean;view:GpuSceneryCandidate[];shadow:GpuSceneryCandidate[]}>();
+      const add=(prop:Prop,id:string,chunk?:Resident)=>{
+        if((!natural||['rock','oak','birch','palm'].includes(prop.kind))&&(this.buildScene?.edits.get(id)?.removed||this.damaged.has(id)))return;
+        if(natural&&['grass','pebble','algae','bush'].includes(prop.kind)&&this.buildScene&&this.buildScene.groundDistance([prop.x,this.buildScene.terrain(prop.x,prop.z).height-.025,prop.z])>0)return;
+        const info=this.renderInfo(prop,settings,!natural),key=`${prop.kind}/${prop.variant}/${prop.aperture??''}`;
+        let group=groups.get(key);if(!group){group={meshes:info.meshes,tree:info.tree,view:[],shadow:[]};groups.set(key,group);}
+        const transform=new Float32Array([prop.x-origin[0],prop.y,prop.z-origin[2],prop.scale,...orientation(prop.normal??[0,1,0],prop.rotation)]);
+        const candidate:GpuSceneryCandidate={transform,sphere:[prop.x-origin[0],info.centerY,prop.z-origin[2],info.radius],horizontal:[prop.x-origin[0],prop.z-origin[2]],maxRange:natural?1000:1e20,natural,range:info.range,boundaries:info.boundaries};
+        if(chunk){const d=chunk.data,e=BASE_CHUNK*2**d.level;candidate.chunk={x:d.x-origin[0],z:d.z-origin[2],extent:e,sphere:[d.x+e/2-origin[0],(d.minHeight+d.maxHeight)/2+40,d.z+e/2-origin[2],Math.hypot(e/2+40,e/2+40,(d.maxHeight-d.minHeight)/2+80)]};}
+        group.view.push(candidate);
+        if(!natural||prop.kind!=='grass'&&prop.kind!=='algae')group.shadow.push({...candidate,boundaries:info.shadowBoundaries});
+      };
+      if(natural){for(const chunk of drawn)if(chunk.data.level<=4)for(const prop of chunk.placedProps??[])add(prop,naturalId(prop),chunk);}
+      else for(const solid of this.buildScene?.placed.values()??[])add(solid.prop,solid.id);
+      const result:GpuSceneryDraw[]=[],retained=new Set<GpuSceneryBatch>();
+      const reusable=new Map<Mesh,Map<string,GpuSceneryDraw>>();
+      for(const draw of old){let slots=reusable.get(draw.mesh);if(!slots){slots=new Map();reusable.set(draw.mesh,slots);}slots.set(`${draw.group}/${draw.shadow}/${draw.level}/${draw.bin}`,draw);}
+      const emit=(mesh:Mesh,candidates:GpuSceneryCandidate[],config:GpuSceneryConfig,shadow:boolean,bin:number,group:string)=>{
+        const previous=reusable.get(mesh)?.get(`${group}/${shadow}/${config.level}/${bin}`);
+        let batch:GpuSceneryBatch;
+        if(previous&&candidates.length<=previous.batch.capacity){batch=previous.batch;batch.replace(candidates,config);retained.add(batch);}
+        else batch=this.gpuCuller!.createBatch(candidates,config);
+        result.push({mesh,batch,shadow,bin,level:config.level,group});
+      };
+      try{
+        for(const [groupKey,group] of groups){
+          const bins=this.frontToBack?[[0,100],[100,250],[250,1e20]]:[[0,1e20]];
+          for(let level=0;level<group.meshes.length;level++)for(const mesh of group.meshes[level]??[])for(let bin=0;bin<bins.length;bin++){
+            emit(mesh,group.view,{mode:'view',level,boundaries:[],range:settings.trees,tree:group.tree&&natural,distanceMin:bins[bin][0],distanceMax:bins[bin][1],indexCount:mesh.count},false,bin,groupKey);
+          }
+          const offset=group.tree?settings.shadowLodOffset:0;
+          if(group.shadow.length)for(let level=0;level<group.meshes.length-offset;level++)for(const mesh of group.meshes[level+offset]??[]){
+            emit(mesh,group.shadow,{mode:'shadow',level:level+offset,boundaries:[],range:settings.trees,tree:group.tree,shadowLodOffset:offset,indexCount:mesh.count},true,0,groupKey);
+          }
+        }
+      }catch(error){for(const draw of result)draw.batch.dispose();throw error;}
+      for(const draw of old)if(!retained.has(draw.batch))draw.batch.dispose();this.gpuRebuilds++;
+      return result.sort((a,b)=>a.bin-b.bin);
+    };
+    let rebuilt=false;
+    if(originChanged||naturalSignature!==this.gpuNaturalSignature){rebuilt=true;this.gpuNaturalDraws=rebuild(this.gpuNaturalDraws,true);this.gpuNaturalSignature=naturalSignature;}
+    if(originChanged||builtSignature!==this.gpuBuiltSignature){rebuilt=true;this.gpuBuiltDraws=rebuild(this.gpuBuiltDraws,false);this.gpuBuiltSignature=builtSignature;}
+    if(rebuilt){this.gpuDraws=[...this.gpuNaturalDraws,...this.gpuBuiltDraws].sort((a,b)=>a.bin-b.bin);this.gpuBatches=this.gpuDraws.map(draw=>draw.batch);}
+  }
   private append(mesh:Mesh,values:Float32Array,shadow=false,distance=Infinity,target?:Map<Mesh,Batch>) {
     const collection=target??(shadow?this.shadowBatches:this.frontToBack&&distance<100?this.nearBatches:this.frontToBack&&distance<250?this.middleBatches:this.batches);
     let batch=collection.get(mesh);
@@ -681,14 +763,18 @@ export class IslandRenderer {
     this.instanceValues.set([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]);
     this.write(this.farUniform,this.instanceValues);
     this.profiler.endStage('distantScenery',stage);stage=this.profiler.mark();
-    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}/${this.perception.signature}/${this.remotePlayers.map(p=>p.id+':'+p.feet.join(',')+':'+(p.posture??'stand')).join(';')}`;
+    const propInfoSignature=`${this.size[1]}/${this.quality}`;
+    if(propInfoSignature!==this.propInfoSignature){this.propInfoSignature=propInfoSignature;this.propRenderInfo=new WeakMap();}
+    const gpuMode=this.gpuCullingEnabled&&!!this.gpuCuller&&hp>=10;
+    this.gpuActive=gpuMode;
+    if(gpuMode)this.prepareGpuScenery(drawn,signature,damageVisibility,camera);
+    const scenerySignature=`${gpuMode}/${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}/${this.perception.signature}/${this.remotePlayers.map(p=>p.id+':'+p.feet.join(',')+':'+(p.posture??'stand')).join(';')}`;
     const sceneryChanged=scenerySignature!==this.scenerySignature;
     this.scenerySignature=scenerySignature;
     if(sceneryChanged) {
     for (const batch of [...this.viewBatchGroups.flatMap(m=>[...m.values()]),...this.shadowBatches.values()]) {batch.count=0;batch.nearest=Infinity;}
     const settings = qualities[this.quality];
-    const propInfoSignature=`${this.size[1]}/${this.quality}`;
-    if(propInfoSignature!==this.propInfoSignature){this.propInfoSignature=propInfoSignature;this.propRenderInfo=new WeakMap();}
+    if(!gpuMode){
     const sceneryChunks = drawn.filter(c => c.data.level <= 4);
     if(this.frontToBack)sceneryChunks.sort((a,b)=>Math.hypot(a.data.x-camera.position[0],a.data.z-camera.position[2])-Math.hypot(b.data.x-camera.position[0],b.data.z-camera.position[2]));
     for (const chunk of sceneryChunks) {
@@ -719,8 +805,9 @@ export class IslandRenderer {
       }
     }
     }
+    }
     for(const player of this.remotePlayers){const [x,y,z]=player.feet,posture=player.posture??'stand',height=posture==='crawl'?1.05:posture==='crouch'?1.5:CHARACTER.height,distance=Math.hypot(x-camera.position[0],z-camera.position[2]);if(camera.visible(x,y+height/2,z,height/2+.32,256)){const values=new Float32Array([x-camera.position[0],y-camera.position[1],z-camera.position[2],1,0,0,0,1,1,0,1]),geometryKey=posture==='crawl'?'player-crawl':posture==='crouch'?'player-crouch':'player-capsule';for(const mesh of this.meshes.get(geometryKey)??[])this.append(mesh,values,false,distance);}}
-    for(const solid of this.buildScene?.placed.query(camera.position[0],camera.position[2],settings.trees)??[]) {
+    if(!gpuMode)for(const solid of this.buildScene?.placed.query(camera.position[0],camera.position[2],settings.trees)??[]) {
       if(this.buildScene?.edits.get(solid.id)?.removed||this.damaged.has(solid.id))continue;
       const prop=solid.prop,distance=Math.hypot(prop.x-camera.position[0],prop.z-camera.position[2]),info=this.renderInfo(prop,settings,true),x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
       const inView=distance<=info.range&&sphereInFrustum(viewPlanes,x,y,z,info.radius)&&!this.perception.hidden(solid.id,prop.x,prop.z),caster=distance<settings.shadowCasterRange+info.radius&&sphereInFrustum(lightPlanes,x,y,z,info.radius);
@@ -739,6 +826,12 @@ export class IslandRenderer {
     if(sceneryChanged)for (const batch of [...this.visibleBatches,...this.casterBatches])this.write(batch.buffer,batch.instances.subarray(0,batch.count*11));
     this.profiler.endStage('instanceUpload',stage);stage=this.profiler.mark();
     const encoder = this.device.createCommandEncoder();this.gpuProfiler?.begin(this.frameNumber);
+    const gpuDraws=gpuMode?this.gpuDraws:[];
+    if(gpuMode){
+      writeGpuSceneryFrame(this.device,this.gpuFrame!,{camera:[camera.position[0]-this.gpuOrigin[0],camera.position[1],camera.position[2]-this.gpuOrigin[2]],viewPlanes:Float32Array.from(viewPlanes.flatMap(p=>Array.from(p))),lightPlanes:Float32Array.from(lightPlanes.flatMap(p=>Array.from(p))),shadowCasterRange:quality.shadowCasterRange,naturalRange:1000});
+      this.gpuCuller!.encode(encoder,this.gpuBatches,this.gpuFrame!,this.gpuProfiler?.pass(6));
+    }else if(this.gpuProfiler?.sampling)this.gpuCuller?.encode(encoder,[],this.gpuFrame!,this.gpuProfiler.pass(6));
+
     const mines=[...this.damaged.values()].filter(d=>d.terrainInstance&&!d.record.removed);
     for(const d of mines){const p=d.record.prop;this.instanceValues.set([p.x-camera.position[0],p.y-camera.position[1],p.z-camera.position[2],1,0,0,0,1]);this.write(d.terrainInstance!,this.instanceValues);}
     const updateMining=(chunk:Resident)=>{
@@ -758,11 +851,15 @@ export class IslandRenderer {
       if(mesh.clipGroup&&mode)pass.setPipeline(mode==='shadow'?this.sceneryShadowPipeline:mode==='depth'?this.sceneryDepthPipeline:mode==='equal'?this.sceneryEqualPipeline:this.sceneryPipeline);
       this.drawCalls++; this.triangles += mesh.count / 3 * count;
     };
+    const drawGpu=(pass:GPURenderPassEncoder,draw:GpuSceneryDraw)=>{
+      const mesh=draw.mesh,material=this.materials.get(mesh.material);if(!material)throw new Error(`Unknown model material ${mesh.material}`);
+      pass.setBindGroup(1,material);pass.setVertexBuffer(0,mesh.vertex);pass.setVertexBuffer(1,draw.batch.instances);pass.setIndexBuffer(mesh.index,mesh.indexFormat);pass.drawIndexedIndirect(draw.batch.indirect,0);this.drawCalls++;
+    };
     const drawTerrain=(pass:GPURenderPassEncoder,chunk:Resident,shadow:boolean)=>{pass.setPipeline(chunk.mining?(shadow?this.minedShadowPipeline:this.minedPipeline):(shadow?this.shadowPipeline:this.scenePipeline));if(chunk.mining)pass.setBindGroup(2,chunk.mining.group);draw(pass,chunk.mesh,chunk.instance);};
     const drawMines=(pass:GPURenderPassEncoder,shadow:boolean)=>{pass.setPipeline(shadow?this.shadowPipeline:this.scenePipeline);for(const d of mines){const p=d.record.prop;if(Math.hypot(p.x-camera.position[0],p.z-camera.position[2])>this.distance+2)continue;for(const mesh of d.meshes)draw(pass,mesh,d.terrainInstance!);}};
     const staticChanged=!this.cacheStaticShadows||scenerySignature!==this.staticShadowSignature;
     this.staticShadowSignature=scenerySignature;
-    const staticCaster=(batch:Batch)=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock'||batch.mesh.material.startsWith('wall-')||['torch-wood','torch-head','linen','iron','brick','ember'].includes(batch.mesh.material);
+    const staticCaster=(batch:{mesh:Mesh})=>batch.mesh.material==='oak-bark'||batch.mesh.material==='birch-bark'||batch.mesh.material==='rock'||batch.mesh.material.startsWith('wall-')||['torch-wood','torch-head','linen','iron','brick','ember'].includes(batch.mesh.material);
     if(staticChanged||this.gpuProfiler?.sampling) {
       const pass=encoder.beginRenderPass({label:'Static sun casters',timestampWrites:this.gpuProfiler?.pass(0),colorAttachments:[],depthStencilAttachment:{view:this.staticShadowTexture.createView(),depthClearValue:1,depthLoadOp:staticChanged?'clear':'load',depthStoreOp:'store'}});
       if(staticChanged) {
@@ -770,6 +867,7 @@ export class IslandRenderer {
         for(const chunk of shadowChunks)drawTerrain(pass,chunk,true);drawMines(pass,true);
         pass.setPipeline(this.sceneryShadowPipeline);
         for(const batch of this.casterBatches)if(staticCaster(batch))draw(pass,batch.mesh,batch.buffer,batch.count,'shadow');
+        for(const draw of gpuDraws)if(draw.shadow&&staticCaster(draw))drawGpu(pass,draw);
       }
       pass.end();
     }
@@ -778,6 +876,7 @@ export class IslandRenderer {
     shadow.setPipeline(this.shadowPipeline); shadow.setBindGroup(0, this.frameOnly);
     shadow.setPipeline(this.sceneryShadowPipeline);
     for (const batch of this.casterBatches)if(!staticCaster(batch))draw(shadow, batch.mesh, batch.buffer, batch.count,'shadow');
+    for(const draw of gpuDraws)if(draw.shadow&&!staticCaster(draw))drawGpu(shadow,draw);
     shadow.end();
     let opaque = encoder.beginRenderPass({ label: 'Terrain, vegetation and sky', timestampWrites:this.gpuProfiler?.pass(2),colorAttachments: [{ view: this.opaque.createView(), clearValue: { r: .5, g: .7, b: .8, a: 1 }, loadOp: 'clear', storeOp: 'store' }], depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' } });
     opaque.setPipeline(this.scenePipeline); opaque.setBindGroup(0, this.frameGroup);
@@ -790,10 +889,13 @@ export class IslandRenderer {
     if(this.depthPrepass){
       opaque.setPipeline(this.sceneryDepthPipeline);
       for(const batch of this.visibleBatches)if(batch.mesh.material!=='torch-flame'&&!batch.mesh.material.endsWith('lod3'))draw(opaque,batch.mesh,batch.buffer,batch.count,'depth');
+      for(const draw of gpuDraws)if(!draw.shadow&&draw.mesh.material!=='torch-flame')drawGpu(opaque,draw);
     }
     opaque.setPipeline(this.depthPrepass?this.sceneryEqualPipeline:this.sceneryPipeline);
     for(const batch of this.visibleBatches)if(batch.mesh.material!=='torch-flame'&&!batch.mesh.material.endsWith('lod3'))draw(opaque,batch.mesh,batch.buffer,batch.count,this.depthPrepass?'equal':'shade');
+    for(const draw of gpuDraws)if(!draw.shadow&&draw.mesh.material!=='torch-flame')drawGpu(opaque,draw);
     opaque.setPipeline(this.sceneryPipeline);for(const batch of this.visibleBatches)if(batch.mesh.material==='torch-flame')draw(opaque,batch.mesh,batch.buffer,batch.count,this.depthPrepass?'equal':'shade');
+    for(const draw of gpuDraws)if(!draw.shadow&&draw.mesh.material==='torch-flame')drawGpu(opaque,draw);
     opaque.setPipeline(this.impostorPipeline);opaque.setBindGroup(0,this.frameGroup);
     opaque.setBindGroup(2,this.farGroup);
     for(const batch of this.farBatches.values())if(batch.count)draw(opaque,batch.mesh,batch.buffer,batch.count,this.depthPrepass?'equal':'shade');
@@ -818,12 +920,14 @@ export class IslandRenderer {
     }
     const post = encoder.beginRenderPass({ timestampWrites:this.gpuProfiler?.pass(5),colorAttachments: [{ view: this.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store' }] });
     post.setPipeline(this.postPipeline); post.setBindGroup(0, this.postGroup); post.draw(3); post.end();
-    this.gpuProfiler?.resolveInto(encoder);this.device.queue.submit([encoder.finish()]);this.gpuProfiler?.submitted();
+    const sampleGpuCounts=gpuMode?this.sampleGpuScenery(encoder,gpuDraws):undefined;
+    this.gpuProfiler?.resolveInto(encoder);this.device.queue.submit([encoder.finish()]);this.gpuProfiler?.submitted();sampleGpuCounts?.();
     this.profiler.endStage('encodeSubmit',stage);
   }
   dispose() {for(const label of this.labels.values())label.remove();this.labels.clear();
     this.disposed = true;
     this.gpuProfiler?.dispose();
+    for(const draw of [...this.gpuNaturalDraws,...this.gpuBuiltDraws])draw.batch.dispose();this.gpuNaturalDraws=[];this.gpuBuiltDraws=[];this.gpuDraws=[];this.gpuBatches=[];this.gpuFrame?.destroy();this.gpuStatsBuffer?.destroy();this.gpuCuller?.dispose();
     this.impostors?.dispose();
     this.collisionTiles.clear();
     for(const id of this.damaged.keys())this.removeDamagedMesh(id);this.treeGeometry.clear();

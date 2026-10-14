@@ -27,9 +27,9 @@ const box=(minX=-1000,maxX=1000,minY=-1000,maxY=1000,minZ=-1000,maxZ=1000)=>new 
   1,0,0,-minX, -1,0,0,maxX, 0,1,0,-minY, 0,-1,0,maxY, 0,0,1,-minZ, 0,0,-1,maxZ,
 ]);
 const frame=(camera=[0,0,0],view=box(),light=box(),shadowCasterRange=60,naturalRange=1000)=>({camera,viewPlanes:view,lightPlanes:light,shadowCasterRange,naturalRange});
-const candidate=(x,{y=0,z=0,range=500,maxRange=500,natural=false,radius=1,transformX=x,chunk}={})=>({
+const candidate=(x,{y=0,z=0,range=500,maxRange=500,natural=false,radius=1,transformX=x,boundaries,chunk}={})=>({
   transform:[transformX,y,z,1,0,0,0,1],sphere:[x,y,z,radius],horizontal:[x,z],maxRange,natural,chunk,
-  ...(range===undefined?{}:{range}),
+  ...(range===undefined?{}:{range}),...(boundaries===undefined?{}:{boundaries}),
 });
 const config=(overrides={})=>({mode:'view',level:0,boundaries:[],range:500,tree:false,indexCount:6,...overrides});
 const close=(a,b)=>Math.abs(a-b)<=0.0002;
@@ -107,19 +107,43 @@ async function run(){
   const viewBatch=await check('view rejects offscreen candidate',[outside],config(),frame([0,0,0],view,light,60));assert(viewBatch.result.count===0,'Off-view scenery leaked into view output');viewBatch.batch.dispose();
   const shadowConfig=config({mode:'shadow'}),shadowBatch=await check('shadow keeps offscreen caster',[outside],shadowConfig,frame([0,0,0],view,light,60));assert(shadowBatch.result.count===1,'Off-view in-range caster was removed from shadow output');shadowBatch.batch.dispose();
 
+  await indirectDrawMatchesCpu([],frame());
   const indirectCandidates=[-12,-6,0,6,12].map(x=>candidate(x,{range:100,maxRange:100}));
   await indirectDrawMatchesCpu(indirectCandidates,frame([0,0,0],box(-40,40,-20,20,-20,20),box(-40,40,-20,20,-20,20),60));
 
   const boundaries=[{distance:100,width:20},{distance:220,width:40}];
+  const finalBoundaries=[...boundaries,{distance:400,width:160}];
   const lodCandidates=[89,90,91,99,100,109,110,111,199,200,220,239,240,241].map(x=>candidate(x,{range:400,maxRange:400}));
   for(const level of [0,1,2]){
     const cfg=config({level,boundaries,range:400}),lod=await check('LOD crossfade level '+level,lodCandidates,cfg,frame([0,0,0],box(0,300,-20,20,-20,20),box(),80));
     assert(lod.result.count>0,'LOD boundary fixture did not produce records');lod.batch.dispose();
   }
+  const scaledProps=[candidate(85,{range:120,maxRange:500,boundaries:[{distance:100,width:40}]}),candidate(140,{range:300,maxRange:500,boundaries:[{distance:200,width:40},{distance:400,width:60}]})];
+  const scaled=await check('per-candidate scaled scenery range and LOD overrides',scaledProps,config({level:0,boundaries:[{distance:20,width:10}],range:50}),frame([0,0,0],box(0,200,-10,10,-10,10),box(),60));
+  assert(scaled.result.count===2,'Per-candidate ranges/boundaries were replaced by the batch defaults');
+  assert(close(scaled.result.records.find(row=>close(row[0],85))?.[8],0.04296875),'Scaled prop did not use its candidate LOD boundary');
+  assert(close(scaled.result.records.find(row=>close(row[0],85))?.[10],0.9259259),'Scaled prop did not use its candidate fade range');
+  assert(scaled.result.records.some(row=>close(row[0],140)&&row[8]===1&&row[10]===1),'Second scaled prop did not use its own LOD/range pair');scaled.batch.dispose();
+
+  const shadowBoundaries=[{distance:100,width:20}],shadowLodCandidates=[90,100,110].map(x=>candidate(x,{range:300,maxRange:300}));
+  const shadowLod1=await check('shadow mesh LOD1 with offset1 selects source LOD0',shadowLodCandidates,config({mode:'shadow',level:1,boundaries:shadowBoundaries,shadowLodOffset:1,range:300}),frame([0,0,0],box(-20,20,-20,20,-20,20),box(0,200,-20,20,-20,20),200));
+  const shadow1Rows=sortedRecords(shadowLod1.result.records);assert(shadow1Rows.length===2&&close(shadow1Rows[0][0],90)&&close(shadow1Rows[0][8],0)&&shadow1Rows[0][9]===1&&close(shadow1Rows[1][0],100)&&close(shadow1Rows[1][8],0.5)&&shadow1Rows[1][9]===1,'Shadow mesh LOD1 with offset1 must match source LOD0 outgoing coverage');shadowLod1.batch.dispose();
+  const shadowLod2=await check('shadow mesh LOD2 with offset1 selects source LOD1',shadowLodCandidates,config({mode:'shadow',level:2,boundaries:shadowBoundaries,shadowLodOffset:1,range:300}),frame([0,0,0],box(-20,20,-20,20,-20,20),box(0,200,-20,20,-20,20),200));
+  const shadow2Rows=sortedRecords(shadowLod2.result.records);assert(shadow2Rows.length===3&&close(shadow2Rows[0][0],90)&&shadow2Rows[0][9]===0&&close(shadow2Rows[1][0],100)&&close(shadow2Rows[1][8],0.5)&&shadow2Rows[1][9]===0&&close(shadow2Rows[2][0],110)&&shadow2Rows[2][8]===1,'Shadow mesh LOD2 with offset1 must match source LOD1 incoming coverage');shadowLod2.batch.dispose();
+
+  const binCandidates=[99,100,249,250].map(x=>candidate(x,{range:300,maxRange:300}));
+  const bins=await check('distance bins include min and exclude max',binCandidates,config({range:300,distanceMin:100,distanceMax:250}),frame([0,0,0],box(0,300,-10,10,-10,10),box(),60));
+  assert(bins.result.records.map(row=>Math.round(row[0])).sort((a,b)=>a-b).join(',')==='100,249','GPU distance bins must be lower-inclusive and upper-exclusive');bins.batch.dispose();
+
+  const builtTree=candidate(400,{range:500,maxRange:500,boundaries}),builtTreeDraw=await check('built tree config allows fading final LOD2', [builtTree],config({level:2,boundaries,range:500,tree:false}),frame([0,0,0],box(0,500,-10,10,-10,10),box(),60));
+  assert(builtTreeDraw.result.count===1&&builtTreeDraw.result.records[0][8]===1&&builtTreeDraw.result.records[0][10]>0&&builtTreeDraw.result.records[0][10]<1,'Built tree LOD2 must remain and fade by range');builtTreeDraw.batch.dispose();
+  const naturalTree=candidate(400,{range:500,maxRange:500,natural:true,boundaries:finalBoundaries}),naturalTreeDraw=await check('natural tree crossfade retains opaque incoming geometry',[naturalTree],config({level:2,boundaries:finalBoundaries,range:500,tree:true}),frame([0,0,0],box(0,500,-10,10,-10,10),box(),60));
+  assert(naturalTreeDraw.result.count===1&&close(naturalTreeDraw.result.records[0][8],0.5)&&naturalTreeDraw.result.records[0][9]===1&&naturalTreeDraw.result.records[0][10]===1,'Natural tree LOD2 should keep full coverage while crossfading toward omitted LOD3');naturalTreeDraw.batch.dispose();
+
   const treeCandidates=[89,90,100,109,110,200,220,240,400].map(x=>candidate(x,{range:500,maxRange:500,natural:true}));
   const treeLod2=await check('tree LOD2 geometry retained',treeCandidates,config({level:2,boundaries,range:500,tree:true}),frame([0,0,0],box(0,450,-20,20,-20,20),box(),80));
   assert(treeLod2.result.count>0,'Built trees must retain their last geometry LOD');treeLod2.batch.dispose();
-  const finalBoundaries=[...boundaries,{distance:400,width:160}],finalTree=candidate(500,{range:800,maxRange:800,natural:true,boundaries:finalBoundaries});
+  const finalTree=candidate(500,{range:800,maxRange:800,natural:true,boundaries:finalBoundaries});
   const treeFinal=await check('tree final geometry LOD exclusion',[finalTree],config({level:3,boundaries:finalBoundaries,range:800,tree:true}),frame([0,0,0],box(0,900,-20,20,-20,20),box(),80));
   assert(treeFinal.result.count===0,'Trees must omit LOD3 geometry used for distant impostors');treeFinal.batch.dispose();
 
