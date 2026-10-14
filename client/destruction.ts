@@ -4,10 +4,13 @@ import type {IslandRenderer} from './renderer';
 import {solidCells,recordFor,volumeRay,brushSeed,treeSolidAssets,destructionRule,actionBrush,openingBrush,localPoint,sameSolidVolume,sameSolidSnapshot,needsSolidGeometry,DESTRUCTION,isTree,type SolidRecord,type WorldAction,type WorldPatch,type ActionResult} from '../shared/destruction';
 import {SparseVolume,brushRegion,volumeBrickRegions,mergeVolumeRegions,type VolumeMesh} from '../shared/volume';
 import type {Point3} from '../shared/rocks';
-import {buildProp} from '../shared/object-registry';
+import {buildProp,objectDefinition,objectRegistry} from '../shared/object-registry';
 import type {CollisionBox} from '../shared/volume-collision';
+import {describeTargetAction,shouldSampleTarget,targetSampleKey} from './interaction-context';
 export class DestructionController {
   right=false;repair=false;active=false;private dismantleAllowed=false;private lastStroke=-Infinity;
+  /** Short, screen-locked target prompt refreshed at most ten times per second. */
+  targetContext='';private lastTargetSample=-Infinity;private targetSignature='';
   readonly authoritative=new Map<string,SolidRecord>();readonly pending=new Map<string,{request:WorldAction;brush?:ReturnType<typeof actionBrush>;expected?:SolidRecord}>();
   readonly metrics:{stage:string;milliseconds:number}[]=[];
   private predictor?:Worker;private predictions=new Map<string,string>();
@@ -128,7 +131,20 @@ export class DestructionController {
     this.boxes.set(current.id,value.result);this.building.scene.setDamageCollision(current,value.result);this.generated.set(current.id,current.revision);this.generatedVolumes.set(current.id,current.volume);this.workerBusy=false;this.current=undefined;this.dispatch();
   }
   private metric(stage:string,milliseconds:number){const values=this.stages.get(stage)??[];values.push(milliseconds);if(values.length>300)values.shift();this.stages.set(stage,values);this.metrics.push({stage,milliseconds});if(this.metrics.length>300)this.metrics.shift();}
-  update(){const now=performance.now();this.active=this.right||this.repair;
+  private updateTargetContext(now:number){
+    const pointerLocked=document.pointerLockElement===this.camera.canvas;
+    if(!this.camera.character.ready||this.building.menuOpen||!pointerLocked){this.targetContext='';this.targetSignature='';return;}
+    if(now-this.lastTargetSample<100)return;
+    const eye=this.camera.position,effects=this.camera.character.effects,signature=targetSampleKey({position:eye,yaw:this.camera.yaw,pitch:this.camera.pitch,sceneRevision:this.building.scene.revision,repair:this.repair,rightArmUsable:effects.rightArmUsable,canBuild:effects.canBuild,ready:this.camera.character.ready,menuOpen:this.building.menuOpen,pointerLocked,worldIdentity:this.building.worldIdentity,connectionState:this.building.connectionState});
+    if(!shouldSampleTarget(now,this.lastTargetSample,signature,this.targetSignature))return;
+    this.targetSignature=signature;this.lastTargetSample=now;
+    const hit=this.building.scene.raycast([...eye]as Point3,this.camera.forward,DESTRUCTION.reach,this.repair,true),solid=hit?.solid;
+    if(!solid){this.targetContext=this.building.connectionState!=='Connected'?this.building.connectionState==='Connecting'?'Waiting for the world':'Reconnecting':this.repair?'No repair target within 4 m':'No target within 4 m · Right-click gather';return;}
+    const rule=destructionRule(solid.prop),name=solid.object?objectDefinition(solid.object.definitionId).label:objectRegistry.get(solid.prop.kind)?.label??(solid.prop.kind==='terrain'?'Ground':solid.prop.kind==='rock'?'Rock':isTree(solid.prop)?'Tree':'Solid');
+    const attachment=solid.object&&objectDefinition(solid.object.definitionId).attachment;
+    this.targetContext=describeTargetAction({name,kind:solid.prop.kind==='terrain'?'terrain':solid.prop.kind==='rock'?'rock':isTree(solid.prop)?'tree':'solid',mode:rule?.mode,repairable:!!solid.object&&!!rule?.repairable,desk:solid.prop.kind==='crafting-desk'||solid.object?.definitionId==='crafting-desk',doorOpen:attachment==='door'?!!solid.object?.state?.open:undefined,interactionOutOfReach:hit!.distance>3&&(solid.object?.definitionId==='crafting-desk'||attachment==='door')},{repair:this.repair,rightArmUsable:effects.rightArmUsable,canBuild:effects.canBuild,worldIdentity:this.building.worldIdentity,connectionState:this.building.connectionState});
+  }
+  update(){const now=performance.now();this.active=this.right||this.repair;this.updateTargetContext(now);
     if(!this.active&&now-this.lastWarm>500&&!this.workerBusy&&this.tasks.size===0){this.lastWarm=now;const preview=this.building.preview?.object;let warm:SolidRecord|undefined;try{if(preview){const solid=this.building.scene.solid(buildProp(preview),'warm');warm=recordFor('warm:'+this.building.definitionId,solid.prop,this.building.scene.rocks);}else{const hit=this.building.scene.raycast([...this.camera.position]as Point3,this.camera.forward,12,false,true);if(hit?.solid&&hit.solid.prop.kind!=='terrain'&&destructionRule(hit.solid.prop)?.mode==='voxel'&&!this.building.scene.edits.has(hit.solid.id))warm=recordFor('warm:'+hit.solid.prop.kind+':'+hit.solid.prop.variant,hit.solid.prop,this.building.scene.rocks);}if(warm&&!this.warmDone.has(warm.id)){this.warmDone.add(warm.id);this.tasks.set(warm.id,warm);this.dispatch();}}catch{}}
     for(const [id,entry]of this.poses){const t=Math.min(1,(now-entry.time)/100),from=entry.from.pose!,to=entry.to.pose!,a=from.rotation,b=[...to.rotation];if(a.reduce((s,n,i)=>s+n*b[i],0)<0)for(let i=0;i<4;i++)b[i]*=-1;const q=a.map((n,i)=>n+(b[i]-n)*t),length=Math.hypot(...q)||1,record={...entry.to,pose:{position:from.position.map((n,i)=>n+(to.position[i]-n)*t)as Point3,rotation:q.map(n=>n/length)as [number,number,number,number]}};this.building.scene.edits.set(id,record);if(this.boxes.has(id)&&t>=1&&(this.building.definitionId||!entry.from.fall?.settled&&record.fall?.settled))this.building.scene.setDamageCollision(record,this.boxes.get(id)!);this.renderer.updateDamagedPose(record);if(t>=1)this.poses.delete(id);}
     if(!this.active||document.pointerLockElement!==this.camera.canvas||now-this.lastStroke<DESTRUCTION.intervalMs)return;this.beginStroke();

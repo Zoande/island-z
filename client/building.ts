@@ -4,11 +4,12 @@ import type {IslandRenderer} from './renderer';
 import type {WorldGenerator} from '../shared/world';
 import {BuildScene} from '../shared/build-scene';
 import {solvePlacement,type Placement} from '../shared/build-placement';
-import {BUILD_CELL,buildCell,buildProp,objectRegistry,objectDefinition,validBuildObject,type BuildObject,type BuildRequest,type BuildResult,type DoorRequest} from '../shared/object-registry';
+import {BUILD_CELL,buildCell,buildProp,objectRegistry,objectDefinition,inventoryItem,validBuildObject,type BuildObject,type BuildRequest,type BuildResult,type DoorRequest} from '../shared/object-registry';
 import {qualities} from './quality';
 import {DestructionController} from './destruction';
 import type {WorldPatch} from '../shared/destruction';
 import {doorChange} from '../shared/door-interaction';
+import {describeHud,itemDisplayName} from './interaction-context';
 interface Snapshot {edits?:WorldPatch;worldKey:string;revision:number;unchanged:boolean;cells:{key:string;objects:BuildObject[]}[]}
 interface Cell {revision:number;objects:BuildObject[]}
 export interface BuildTransport {
@@ -26,6 +27,7 @@ export class BuildingController {
   menuOpen=false;private previewSignature='';private previousLook='';private lastMotion=0;
   private doorBusy=new Set<string>();private interaction:BuildObject|null=null;private interactionSignature='';
   get definitionId(){const stack=this.network?.inventory?.slots[this.selected];return stack&&objectRegistry.has(stack.item)?stack.item:undefined;}
+  get selectedStack(){return this.network?.inventory?.slots[this.selected]??null;}
   get deskTarget(){const hit=this.scene.raycast([...this.camera.position]as [number,number,number],this.camera.forward,3);return hit?.solid?.object?.definitionId==='crafting-desk'?hit.solid.object:undefined;}
   private notice='';private noticeUntil=0;private hudSignature='';private disposed=false;
   constructor(readonly camera:PlayerCamera,world:WorldGenerator,readonly renderer:IslandRenderer,readonly transport:BuildTransport) {
@@ -48,6 +50,7 @@ export class BuildingController {
       eye:[...this.camera.position]as [number,number,number],direction:this.camera.forward,feet:[...this.camera.character.feet]as [number,number,number],standing:this.camera.character.grounded&&!this.camera.character.swimming&&!this.camera.character.crawling};
   }
   get worldIdentity(){return this.worldKey;}
+  get connectionState(){return this.connection;}
   visibleCells(){return this.wantedCells();}
   update(_dt:number) {
     this.destruction.update();
@@ -72,15 +75,15 @@ export class BuildingController {
   }
   private updateHud(now:number) {
     const id=this.definitionId,notice=now<this.noticeUntil?this.notice:'',desk=this.interaction?.definitionId==='crafting-desk'?'E use crafting desk':'',door=this.interaction&&!desk?`F ${this.interaction.state?.open?'close':'open'} door`:'',interaction=desk||door,reason=notice||this.preview?.reason||(!this.worldKey?'Connecting building service':'');
-    const signature=`${this.selected}/${id}/${reason}/${interaction}/${this.preview?.valid}/${this.pending.size}/${this.menuOpen}`;if(signature===this.hudSignature)return;this.hudSignature=signature;
-    const hint=document.getElementById('build-hint')!;hint.textContent=id?`${objectDefinition(id).label} · ${reason}${this.pending.size?' · Saving…':''}`:notice||'E inventory · 1–9 select · Right-click gather';
-    hint.classList.toggle('invalid',!!notice||!!this.preview&&!this.preview.valid);
+    const target=this.destruction.targetContext,signature=`${this.selected}/${this.selectedStack?.item}/${id}/${reason}/${interaction}/${target}/${this.preview?.valid}/${this.pending.size}/${this.menuOpen}`;if(signature===this.hudSignature)return;this.hudSignature=signature;
     const controls=document.getElementById('build-controls')!;
-    controls.textContent=id&&objectDefinition(id).family==='floor'?'Click place · T tilt 5° · Wheel tilt 1°':'Click place · Wheel fine rotate · T turn 90°';
-    if(id&&objectDefinition(id).attachment)controls.textContent='Click attach · alignment follows the wall';
-    if(id&&this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top')controls.textContent=objectDefinition(id).family==='roof'?'Click place · T switch roof side':objectDefinition(id).family==='floor'?'Click connect · T / Wheel tilt':'Click stack · follows wall below';
-    controls.textContent+=' · Right-click cut/dismantle · Hold R repair';controls.hidden=this.menuOpen;
-    if(interaction)hint.textContent+=` · ${interaction}`;
+    let buildControls:string|undefined;
+    if(id){buildControls=objectDefinition(id).family==='floor'?'Click place · T tilt 5° · Wheel tilt 1°':'Click place · Wheel fine rotate · T turn 90°';
+      if(objectDefinition(id).attachment)buildControls='Click attach · alignment follows the wall';
+      if(this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top')buildControls=objectDefinition(id).family==='roof'?'Click place · T switch roof side':objectDefinition(id).family==='floor'?'Click connect · T / Wheel tilt':'Click stack · follows wall below';}
+    const stack=this.selectedStack,itemName=itemDisplayName(stack?.item,id?objectDefinition(id).label:undefined,stack?inventoryItem(stack.item)?.label:undefined),hud=describeHud({itemName,placementReason:this.preview?.reason||(!this.worldKey?'Connecting building service':''),notice,pending:!!id&&this.pending.size>0,buildControls,target,interaction:target?'':interaction});
+    const hint=document.getElementById('build-hint')!;hint.textContent=hud.hint;hint.classList.toggle('invalid',!!notice||!!this.preview&&!this.preview.valid);
+    controls.textContent=hud.controls;controls.hidden=this.menuOpen;
   }
   private notify(message:string){this.notice=message;this.noticeUntil=performance.now()+4500;this.hudSignature='';}
   place() {

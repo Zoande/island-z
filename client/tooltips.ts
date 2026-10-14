@@ -40,6 +40,13 @@ export class TooltipManager {
         this.hide();
       }
     }, opts);
+    const repositionAfterMotion=(event:Event)=>{
+      const anchor=this.activeAnchor,target=event.target;
+      if(!anchor||!(target instanceof Node))return;
+      if(target===anchor||target.contains(anchor)||anchor.contains(target))this.reposition();
+    };
+    doc.addEventListener('transitionend',repositionAfterMotion,{capture:true,signal:this.abort.signal});
+    doc.addEventListener('animationend',repositionAfterMotion,{capture:true,signal:this.abort.signal});
     doc.defaultView?.addEventListener('resize', () => this.reposition(), opts);
     doc.defaultView?.addEventListener('scroll', () => this.reposition(), {capture: true, signal: this.abort.signal});
   }
@@ -54,6 +61,10 @@ export class TooltipManager {
   }
 
   show(anchor: HTMLElement, value?: TooltipValue): void {
+    if (!anchor.isConnected || anchor.ownerDocument !== this.doc) {
+      if (this.activeAnchor === anchor || this.activeAnchor && !this.activeAnchor.isConnected) this.hide();
+      return;
+    }
     const provider = value === undefined ? this.providerFor(anchor) : () => value;
     const provided = provider?.();
     const normalized = this.normalize(provided);
@@ -70,7 +81,13 @@ export class TooltipManager {
   }
 
   /** Refreshes live health/item content without changing the focused or hovered anchor. */
-  refresh(): void { if (this.activeAnchor) this.show(this.activeAnchor); }
+  refresh(reposition = false): void {
+    const anchor=this.activeAnchor;
+    if(!anchor)return;
+    if(!anchor.isConnected||anchor.ownerDocument!==this.doc){this.hide();return;}
+    this.show(anchor);
+    if(reposition&&this.activeAnchor===anchor&&!this.tooltip.hidden)this.reposition();
+  }
 
   hide(): void {
     this.doc.defaultView?.clearTimeout(this.hideTimer);
