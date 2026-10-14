@@ -1,4 +1,5 @@
-export interface RemotePlayer {id:string;nickname:string;feet:[number,number,number];respawns?:number;velocity?:[number,number,number];grounded?:boolean}
+export type RemotePosture='stand'|'crouch'|'crawl';
+export interface RemotePlayer {id:string;nickname:string;feet:[number,number,number];posture?:RemotePosture;respawns?:number;velocity?:[number,number,number];grounded?:boolean}
 interface Frame {time:number;arrived:number;players:RemotePlayer[]}
 const MAX_EXTRAPOLATION_MS=100;
 
@@ -43,7 +44,7 @@ export class RemotePlayerTimeline {
         const ahead=Math.min(MAX_EXTRAPOLATION_MS,target-latest.time)/1000;
         return {...player,feet:player.feet.map((value,i)=>value+(i===1&&player.grounded?0:player.velocity![i])*ahead) as [number,number,number]};
       }
-      return {id:player.id,nickname:player.nickname,feet:player.feet.map((value,i)=>prior.feet[i]+(value-prior.feet[i])*amount) as [number,number,number]};
+      return {id:player.id,nickname:player.nickname,feet:player.feet.map((value,i)=>prior.feet[i]+(value-prior.feet[i])*amount) as [number,number,number],posture:player.posture};
     });
   }
 }

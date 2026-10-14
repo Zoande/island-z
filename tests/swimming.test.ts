@@ -46,16 +46,17 @@ describe('movement and swimming',()=>{
     const c=swimmer(environment,-1.788);advance(c,3,input(['KeyD']));expect(c.feet[0]).toBeGreaterThan(5);expect(c.swimming).toBe(false);expect(c.grounded).toBe(true);
     const bed=swimmer({...ocean,surface:()=>({height:-7,normal:[0,1,0]})});advance(bed,5,input(['ShiftLeft']));expect(bed.feet[1]).toBe(-7);
   });
-  it('resets to the original game spawn after exactly one minute submerged, including missing terrain',()=>{
-    let loaded=true;const c=new Character({...ocean,surface:()=>loaded?{height:-100,normal:[0,1,0]}:null});
+  it('drowns after oxygen depletion and respawns healthy at shore',()=>{
+    let loaded=true;const c=new Character({...ocean,surface:()=>loaded?{height:-100,normal:[0,1,0]}:null,water:(x,z)=>x<10?{level:0,kind:'ocean'}:null});
     c.spawn(20,3,30);c.spawn(0,-10,0);loaded=false;advanceVitals(c,59);expect(c.oxygen).toBeCloseTo(1,8);expect(c.respawns).toBe(0);
-    advanceVitals(c,1);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([20,3,30]);expect(c.oxygen).toBe(60);expect(c.stamina).toBe(100);
+    advanceVitals(c,1);expect(c.respawns).toBe(0);expect([...c.feet]).toEqual([0,-10,0]);expect(c.oxygen).toBeCloseTo(0,8);expect(c.health.head.hp).toBeLessThan(100);
+    for(let i=0;i<13*120;i++)c.advanceVitals(1/120);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([20,3,30]);expect(c.lastDeathCause).toBe('drowning');expect(c.oxygen).toBe(CHARACTER.oxygenSeconds);
   });
   it('keeps freshwater and near-shore oxygen gentle, then increases offshore drowning risk without a boundary',()=>{
     for(const [kind,distance,seconds]of [['lake',2000,60],['river',2000,60],['ocean',0,60],['ocean',50,60],['ocean',400,30],['ocean',750,12],['ocean',1450,60/17]]as const) {
       const c=new Character({...ocean,surface:()=>null,water:()=>({level:0,kind,offshoreMeters:distance})});c.spawn(0,3,0);c.spawn(0,-10,0);
       advanceVitals(c,seconds-.01);expect(c.respawns).toBe(0);expect(c.oxygen).toBeGreaterThan(0);
-      advanceVitals(c,.02);expect(c.respawns).toBe(1);expect([...c.feet]).toEqual([0,3,0]);expect(c.oxygenDrainRate).toBe(1);
+      advanceVitals(c,.02);expect(c.respawns).toBe(0);expect(c.oxygen).toBeCloseTo(0,8);expect(c.health.head.hp).toBeLessThan(100);expect(c.oxygenDrainRate).toBeGreaterThanOrEqual(1);
     }
   });
   it('updates drain when returning to shore or freshwater and keeps surface breathing and frame rates consistent',()=>{
@@ -79,7 +80,7 @@ describe('movement and swimming',()=>{
     const lake=swimmer({...ocean,water:()=>({level:0,kind:'lake'})},-1.788);
     advance(lake,360,input(['KeyW','Space']),10);expect(lake.stamina).toBeGreaterThan(30);expect(lake.respawns).toBe(0);
     const sea=swimmer(ocean,-1.788);advance(sea,290,input(['KeyW','Space']),10);expect(sea.exhausted).toBe(true);expect(sea.velocity[1]).toBeLessThan(0);
-    advance(sea,60,input(['Space']),10);expect(sea.respawns).toBe(1);
+    advance(sea,5,input(['Space']),10);expect(sea.respawns).toBe(0);
     const runner=new Character(flat);runner.spawn(0,0,0);runner.stamina=0;runner.exhausted=true;advance(runner,3,input(['KeyW','ShiftLeft']));expect(-runner.velocity[2]).toBeCloseTo(CHARACTER.walkSpeed);
   });
   it('keeps underwater tree collisions and simulation stable across frame rates',()=>{

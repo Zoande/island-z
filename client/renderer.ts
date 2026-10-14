@@ -1,8 +1,11 @@
-import {capsuleGeometry} from './player-geometry';
+import {capsuleGeometry,crouchGeometry,crawlGeometry} from './player-geometry';
 import {naturalId,quaternion,worldPoint,destructionRule,sameSolidVolume,type SolidRecord} from '../shared/destruction';
 import {survivingFoliage} from './damaged-foliage';
+import {headBlur,HeadInjuryPerception} from './head-injury';
+import {wallContains} from '../shared/wall-collision';
 import {meshVolumeRegion,mergeVolumeRegions,type VolumeMesh,type VolumeRegion} from '../shared/volume';
 import { mat4 } from 'gl-matrix';
+import {CHARACTER} from '../shared/character';
 import type { WorldConfig } from '../shared/config';
 import { BASE_CHUNK, VERTEX_FLOATS, type ChunkData } from '../shared/mesh';
 import type { Prop } from '../shared/world';
@@ -77,8 +80,9 @@ export class IslandRenderer {
   private damaged=new Map<string,DamageDraw>();private treeGeometry=new Map<string,GeometryData[]>();private damageVisibility='';private damageGeometryRevision=0;
   private scenerySignature='';
   private visibleBatches:Batch[]=[];
-  remotePlayers:{id:string;nickname:string;feet:[number,number,number]}[]=[];private labels=new Map<string,HTMLElement>();
+  remotePlayers:{id:string;nickname:string;feet:[number,number,number];posture?:'stand'|'crouch'|'crawl'}[]=[];private labels=new Map<string,HTMLElement>();
   buildScene?:BuildScene;
+  private perception?:HeadInjuryPerception;private visionBlur=-1;
   buildPreview:{prop:Prop;valid:boolean;motion:number}|null=null;
   private previewPipeline!:GPURenderPipeline;
   private previewInstance!:GPUBuffer;private previewUniform!:GPUBuffer;private previewGroup!:GPUBindGroup;
@@ -334,6 +338,8 @@ export class IslandRenderer {
     await this.impostors.bake(48,bakePipeline,this.frameLayout,this.shadowTexture,this.materials,this.lightingUniform);
     this.assertActive();
     this.meshes.set('player-capsule',[this.mesh(capsuleGeometry())]);
+    this.meshes.set('player-crouch',[this.mesh(crouchGeometry())]);
+    this.meshes.set('player-crawl',[this.mesh(crawlGeometry())]);
     this.waterMesh = this.mesh(oceanMesh());
     this.oceanInstance = this.upload(new Float32Array([0,0,0,1,0,0,0,1]),GPUBufferUsage.VERTEX,'Ocean anchor');
     this.resize();
@@ -518,6 +524,14 @@ export class IslandRenderer {
   }
   render(camera: PlayerCamera, stream: TerrainStream, time: number) {
     if (this.disposed) return;
+    this.perception??=new HeadInjuryPerception(this.config.seed,(x,z)=>this.buildScene?.terrain(x,z).height??0);
+    const hp=camera.character.health.head.hp,blur=headBlur(hp);
+    if(blur!==this.visionBlur){this.visionBlur=blur;this.canvas.style.filter=blur>0?`blur(${blur.toFixed(2)}px)`:'';}
+    this.perception.update(hp,camera.character.feet);
+    if(hp<10)for(const solid of this.buildScene?.nearby(camera.character.feet[0],camera.character.feet[2],2)??[]){
+      if(!this.perception.hidden(solid.id,solid.prop.x,solid.prop.z))continue;
+      if(solid.colliders.some(c=>camera.character.feet[1]<c.top&&camera.character.feet[1]+camera.character.height>c.bottom&&(c.wall?wallContains(c,camera.character.feet[0],camera.character.feet[2],.43):Math.hypot(camera.character.feet[0]-c.x,camera.character.feet[2]-c.z)<c.radius+.43)))this.perception.reveal(solid.id);
+    }
     let stage=this.profiler.mark();
     this.frameNumber++; this.resize(); this.updateShadows(); this.ingest(stream); this.drawCalls = 0; this.triangles = 0;
     this.profiler.endStage('ingest',stage);stage=this.profiler.mark();
@@ -660,7 +674,7 @@ export class IslandRenderer {
     const handoff=quality.treeLod[2];
     this.write(this.farUniform,new Float32Array([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]));
     this.profiler.endStage('distantScenery',stage);stage=this.profiler.mark();
-    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}/${this.remotePlayers.map(p=>p.id+':'+p.feet.join(',')).join(';')}`;
+    const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}/${this.perception.signature}/${this.remotePlayers.map(p=>p.id+':'+p.feet.join(',')+':'+(p.posture??'stand')).join(';')}`;
     const sceneryChanged=scenerySignature!==this.scenerySignature;
     this.scenerySignature=scenerySignature;
     if(sceneryChanged) {
@@ -683,7 +697,7 @@ export class IslandRenderer {
       const info=this.renderInfo(prop,settings),{tree,radius,range,boundaries}=info;
       const x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
       const caster=prop.kind!=='grass'&&prop.kind!=='algae'&&distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,x,y,z,radius);
-      const inView=distance<=range&&sphereInFrustum(viewPlanes,x,y,z,radius);
+      const inView=distance<=range&&sphereInFrustum(viewPlanes,x,y,z,radius)&&!this.perception.hidden(naturalId(prop),prop.x,prop.z);
       if(!inView&&!caster)continue;
       const values=this.instance(prop,camera);
       if(inView)for(const entry of lodEntries(distance,boundaries)) {
@@ -698,21 +712,22 @@ export class IslandRenderer {
       }
     }
     }
-    for(const player of this.remotePlayers){const [x,y,z]=player.feet,distance=Math.hypot(x-camera.position[0],z-camera.position[2]);if(camera.visible(x,y+1,z,2,256)){const values=new Float32Array([x-camera.position[0],y-camera.position[1],z-camera.position[2],1,0,0,0,1,1,0,1]);for(const mesh of this.meshes.get('player-capsule')??[])this.append(mesh,values,false,distance);}}
+    for(const player of this.remotePlayers){const [x,y,z]=player.feet,posture=player.posture??'stand',height=posture==='crawl'?1.05:posture==='crouch'?1.5:CHARACTER.height,distance=Math.hypot(x-camera.position[0],z-camera.position[2]);if(camera.visible(x,y+height/2,z,height/2+.32,256)){const values=new Float32Array([x-camera.position[0],y-camera.position[1],z-camera.position[2],1,0,0,0,1,1,0,1]),geometryKey=posture==='crawl'?'player-crawl':posture==='crouch'?'player-crouch':'player-capsule';for(const mesh of this.meshes.get(geometryKey)??[])this.append(mesh,values,false,distance);}}
     for(const solid of this.buildScene?.placed.query(camera.position[0],camera.position[2],settings.trees)??[]) {
       if(this.buildScene?.edits.get(solid.id)?.removed||this.damaged.has(solid.id))continue;
       const prop=solid.prop,distance=Math.hypot(prop.x-camera.position[0],prop.z-camera.position[2]),info=this.renderInfo(prop,settings,true),x=prop.x-camera.position[0],y=info.centerY-camera.position[1],z=prop.z-camera.position[2];
-      const inView=distance<=info.range&&sphereInFrustum(viewPlanes,x,y,z,info.radius),caster=distance<settings.shadowCasterRange+info.radius&&sphereInFrustum(lightPlanes,x,y,z,info.radius);
+      const inView=distance<=info.range&&sphereInFrustum(viewPlanes,x,y,z,info.radius)&&!this.perception.hidden(solid.id,prop.x,prop.z),caster=distance<settings.shadowCasterRange+info.radius&&sphereInFrustum(lightPlanes,x,y,z,info.radius);
       if(!inView&&!caster)continue;const values=this.instance(prop,camera);
       if(inView)for(const entry of lodEntries(distance,info.boundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=rangeFade(distance,info.range);for(const mesh of info.meshes[entry.level])this.append(mesh,values,false,distance);}
       if(caster)for(const entry of lodEntries(distance,info.shadowBoundaries)){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;values[10]=1;for(const mesh of info.meshes[entry.level+(info.tree?settings.shadowLodOffset:0)])this.append(mesh,values,true);}
     }
     for(const {record,meshes,lods}of this.damaged.values()){if(record.removed||record.prop.kind==='terrain')continue;const p=record.pose?.position??[record.prop.x,record.prop.y,record.prop.z],distance=Math.hypot(p[0]-camera.position[0],p[2]-camera.position[2]);if(distance>settings.trees)continue;const bounds=record.fragmentBounds??record.source.bounds,center=worldPoint(record,bounds[0].map((v,k)=>(v+bounds[1][k])/2)as [number,number,number]),radius=Math.hypot(...bounds[1].map((v,k)=>(v-bounds[0][k])/2))*record.prop.scale+3,inView=sphereInFrustum(viewPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius),caster=distance<settings.shadowCasterRange+radius&&sphereInFrustum(lightPlanes,center[0]-camera.position[0],center[1]-camera.position[1],center[2]-camera.position[2],radius);if(!inView&&!caster)continue;const q=quaternion(record),values=new Float32Array([p[0]-camera.position[0],p[1]-camera.position[1],p[2]-camera.position[2],record.prop.scale,...q,1,0,rangeFade(distance,settings.trees)]);const levels=[meshes,...lods],entries=lodEntries(distance,lods.length?settings.treeLod.slice(0,lods.length):[]);for(const entry of entries){values[8]=entry.threshold;values[9]=entry.outgoing?1:0;for(const mesh of levels[entry.level]){if(inView)this.append(mesh,values,false,distance);if(caster)this.append(mesh,values,true);}}}
+    for(const prop of this.perception.ghosts){const distance=Math.hypot(prop.x-camera.position[0],prop.z-camera.position[2]);if(distance>38)continue;const info=this.renderInfo(prop,settings,true);if(!camera.visible(prop.x,info.centerY,prop.z,info.radius,this.distance))continue;const values=this.instance(prop,camera);values[10]=1;for(const mesh of info.meshes[0])this.append(mesh,values,false,distance);}
     this.visibleBatches=this.viewBatchGroups.flatMap(m=>[...m.values()].filter(b=>b.count).sort((a,b)=>this.frontToBack?a.nearest-b.nearest:0));
     this.casterBatches=[...this.shadowBatches.values()].filter(b=>b.count);
     }
     const ids=new Set(this.remotePlayers.map(p=>p.id));for(const [id,label]of this.labels)if(!ids.has(id)){label.remove();this.labels.delete(id);}
-    const vp=camera.matrices(this.size[0]/this.size[1],this.distance).vp;for(const player of this.remotePlayers){let label=this.labels.get(player.id);if(!label){label=document.createElement('span');label.className='player-nickname';document.body.append(label);this.labels.set(player.id,label);}label.textContent=player.nickname;const p=[player.feet[0]-camera.position[0],player.feet[1]+2.45-camera.position[1],player.feet[2]-camera.position[2]],w=vp[3]*p[0]+vp[7]*p[1]+vp[11]*p[2]+vp[15],x=vp[0]*p[0]+vp[4]*p[1]+vp[8]*p[2]+vp[12],y=vp[1]*p[0]+vp[5]*p[1]+vp[9]*p[2]+vp[13];label.hidden=w<=0||Math.abs(x)>w||Math.abs(y)>w;label.style.left=(x/w*.5+.5)*innerWidth+'px';label.style.top=(-y/w*.5+.5)*innerHeight+'px';}
+    const vp=camera.matrices(this.size[0]/this.size[1],this.distance).vp;for(const player of this.remotePlayers){let label=this.labels.get(player.id);if(!label){label=document.createElement('span');label.className='player-nickname';document.body.append(label);this.labels.set(player.id,label);}label.textContent=player.nickname;const labelOffset=(player.posture==='crawl'?1.05:player.posture==='crouch'?1.5:CHARACTER.height)+.3,p=[player.feet[0]-camera.position[0],player.feet[1]+labelOffset-camera.position[1],player.feet[2]-camera.position[2]],w=vp[3]*p[0]+vp[7]*p[1]+vp[11]*p[2]+vp[15],x=vp[0]*p[0]+vp[4]*p[1]+vp[8]*p[2]+vp[12],y=vp[1]*p[0]+vp[5]*p[1]+vp[9]*p[2]+vp[13];label.hidden=w<=0||Math.abs(x)>w||Math.abs(y)>w;label.style.left=(x/w*.5+.5)*innerWidth+'px';label.style.top=(-y/w*.5+.5)*innerHeight+'px';}
     this.profiler.endStage('scenery',stage);stage=this.profiler.mark();
     if(sceneryChanged)for (const batch of [...this.visibleBatches,...this.casterBatches])this.write(batch.buffer,batch.instances.subarray(0,batch.count*11));
     this.profiler.endStage('instanceUpload',stage);stage=this.profiler.mark();

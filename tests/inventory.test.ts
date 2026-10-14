@@ -1,11 +1,13 @@
 import {describe,it,expect} from 'vitest';
 import {emptyInventory,addItems,collectResource,consumeItem,countItem,craftRecipe,moveInventory,validateInventory,resourceYield,INVENTORY_SLOTS,INVENTORY_STACK} from '../shared/inventory';
+import {inventoryItem,objectRegistry} from '../shared/object-registry';
 import {BuildStore} from '../server/build-store';
 import {WorldJournal} from '../server/journal';
 import {WorldRuntime} from '../server/world-runtime';
 import {terrainRecord} from '../shared/terrain-volume';
 import {solvePlacement} from '../shared/build-placement';
 import {CHARACTER} from '../shared/character';
+import {healthyBody} from '../shared/health';
 import type {BuildRequest} from '../shared/object-registry';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -54,6 +56,23 @@ describe('survival inventory',()=>{
   expect(consumeItem(moved,'wall-wood',2)).toBeNull();
   const stacks=emptyInventory();stacks.slots[0]={item:'wood',count:50};stacks.slots[1]={item:'wood',count:80};const merged=moveInventory(stacks,0,1)!;
   expect(merged.slots[0]).toEqual({item:'wood',count:30});expect(merged.slots[1]).toEqual({item:'wood',count:100});expect(moveInventory(stacks,0,1,30)).toBeNull();
+ });
+ it('keeps a separate offhand slot, caps inventory items, and permits only equipment or crafted items there',()=>{
+  const empty=emptyInventory();
+  expect(empty.slots).toHaveLength(29);expect(empty.offhand).toBeNull();expect(inventoryItem('crutches')).toMatchObject({stackLimit:1,offhand:true});
+  expect(inventoryItem('bandage')).toMatchObject({stackLimit:100,offhand:false});expect(objectRegistry.has('crutches')).toBe(false);expect(objectRegistry.has('bandage')).toBe(false);
+  expect(validateInventory({...empty,offhand:undefined})).toBe(true);expect(validateInventory({...empty,offhand:{item:'wood',count:1}})).toBe(false);
+  let inventory=addItems(empty,'wood',6)!;inventory=craftRecipe(inventory,'crutches')!;expect(countItem(inventory,'crutches')).toBe(1);
+  const offhand=moveInventory(inventory,0,29)!;expect(offhand.slots[0]).toBeNull();expect(offhand.offhand).toEqual({item:'crutches',count:1});
+  expect(validateInventory(offhand)).toBe(true);expect(moveInventory(addItems(empty,'wood',2)!,0,29)).toBeNull();expect(moveInventory(addItems(empty,'rock',1)!,0,29)).toBeNull();
+  expect(addItems(empty,'crutches',2)?.slots.slice(0,2)).toEqual([{item:'crutches',count:1},{item:'crutches',count:1}]);expect(moveInventory({...offhand,slots:[{item:'crutches',count:1},...offhand.slots.slice(1)]},0,29)).toBeNull();
+  expect(moveInventory(offhand,29,1)?.slots[1]).toEqual({item:'crutches',count:1});
+  expect(moveInventory(empty,0,29)).toBeNull();
+  let materials=addItems(addItems(empty,'sand',2)!,'dirt',2)!;materials=craftRecipe(materials,'bandage')!;expect(countItem(materials,'bandage')).toBe(1);
+  const equipped=moveInventory(craftRecipe(addItems(empty,'wood',6)!,'crutches')!,0,29)!;
+  expect(addItems(equipped,'wood',1)?.offhand).toEqual({item:'crutches',count:1});
+  expect(collectResource(equipped,'stone',1)?.offhand).toEqual({item:'crutches',count:1});
+  let supplied=addItems(addItems(equipped,'sand',2)!,'dirt',2)!;supplied=craftRecipe(supplied,'bandage')!;expect(supplied.offhand).toEqual({item:'crutches',count:1});
  });
  it('maps successfully mined natural materials and excludes built objects',()=>{
   expect(resourceYield({kind:'oak'})?.item).toBe('wood');expect(resourceYield({kind:'rock'})?.item).toBe('stone');
@@ -107,5 +126,61 @@ describe('survival inventory',()=>{
    expect(countItem(restored.inventory,'wall-wood')).toBe(1);runtime.command('two',{kind:'craft',inputSeq:0,request:{requestId:'inventory-craft-0001',recipeId:'wall-wood'}});await restored.commands;
    expect(countItem(restored.inventory,'wall-wood')).toBe(1);expect(countItem(restored.inventory,'wood')).toBe(0);
   }finally{await runtime.close();rmSync(dir,{recursive:true,force:true});}
+ },30000);
+ it('bandages one selected pack slot atomically with health, survives restart, and replays privately',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'island-bandage-')),config={seed:'bandage-journal',islandSizeMeters:1024},events:any[]=[];let runtime=new WorldRuntime(config,dir,(_connection,message)=>events.push(message));
+  try{
+   await runtime.initialize();clearInterval(runtime['timer']);await runtime.join('one',{version:1,identity:'bandage-browser-identity-01',nickname:'Medic'});const session=runtime.sessions.get('one')!;
+   session.character.damage('head',20,'heavy');session.inventory=addItems(session.inventory,'bandage',1)!;runtime['inventories'].set(session.id,session.inventory);
+   const request={requestId:'bandage-head-request-01',part:'head',from:0};runtime.command('one',{kind:'bandage',inputSeq:0,request});await session.commands;
+   expect(session.character.health.head).toMatchObject({hp:80,bleeding:'none'});expect(countItem(session.inventory,'bandage')).toBe(0);
+   expect(events.find(e=>e.type==='health'&&e.requestId===request.requestId)?.health.head).toMatchObject({hp:80,bleeding:'none'});
+   await runtime.close();runtime=new WorldRuntime(config,dir,(_connection,message)=>events.push(message));await runtime.initialize();await runtime.join('two',{version:1,identity:'bandage-browser-identity-01',nickname:'Medic'});const restored=runtime.sessions.get('two')!;
+   expect(restored.character.health.head).toMatchObject({hp:80,bleeding:'none'});expect(countItem(restored.inventory,'bandage')).toBe(0);
+   runtime.command('two',{kind:'bandage',inputSeq:0,request});await restored.commands;expect(countItem(restored.inventory,'bandage')).toBe(0);expect(restored.character.health.head.hp).toBe(80);
+  }finally{await runtime.close();rmSync(dir,{recursive:true,force:true});}
+ },30000);
+ it('ignores client health and vitals in trusted movement and blocks tool work with a ruined right arm',async()=>{
+  const events:any[]=[],runtime=new WorldRuntime({seed:'trust-health',islandSizeMeters:1024},undefined,(_c,m)=>events.push(m),false);
+  try{
+   await runtime.initialize();clearInterval(runtime['timer']);await runtime.join('one',{version:1,identity:'trust-health-browser-01',nickname:'Runner'});const session=runtime.sessions.get('one')!;
+   session.character.damage('rightArm',80);session.character.oxygen=22;session.character.stamina=17;
+   const forged={...session.character.capture(),health:healthyBody(),oxygen:60,stamina:100};runtime.inputs('one',{steps:[],state:forged,stateSeq:0});
+   expect(session.character.health.rightArm.hp).toBe(20);expect(session.character.oxygen).toBe(22);expect(session.character.stamina).toBe(17);
+   session.character.respawns=1;const authoritativeFeet=[...session.character.feet],stale={...session.character.capture(),respawns:0,feet:[100,100,100]as[number,number,number]};runtime.inputs('one',{steps:[],state:stale,stateSeq:0});
+   expect([...session.character.feet]).toEqual(authoritativeFeet);expect(events.some(e=>e.type==='health'&&e.reason==='respawn'&&e.ack===0)).toBe(true);
+   let edited=false;(runtime.edits as any).action=async()=>{edited=true;return {ok:true,patch:{revision:1,solids:[],removedBuilds:[],leveling:[],openings:[]}};};
+   runtime.command('one',{kind:'action',inputSeq:0,request:{requestId:'injured-arm-tool-0001',targetId:'oak',action:'cut'}});await session.commands;
+   expect(edited).toBe(false);expect(events.find(e=>e.type==='receipt'&&e.id==='injured-arm-tool-0001')?.result.ok).toBe(false);
+   session.character.damage('head',80);session.inventory=addItems(emptyInventory(),'wall-wood',1)!;
+   runtime.command('one',{kind:'build',inputSeq:0,request:{requestId:'injured-head-build-0002',definitionId:'wall-wood',variant:0}});await session.commands;
+   expect(events.find(e=>e.type==='receipt'&&e.id==='injured-head-build-0002')?.result).toMatchObject({ok:false,error:'Your injuries prevent building'});
+  }finally{await runtime.close();}
+ },30000);
+ it('does not roll back intervening injuries or a fatal respawn while bandage persistence is pending',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'island-bandage-race-')),config={seed:'bandage-race',islandSizeMeters:1024};let runtime=new WorldRuntime(config,dir,()=>{});
+  try{
+   await runtime.initialize();clearInterval(runtime['timer']);await runtime.join('one',{version:1,identity:'bandage-race-browser-01',nickname:'Medic'});const session=runtime.sessions.get('one')!;
+   session.character.damage('head',20,'heavy');session.inventory=addItems(session.inventory,'bandage',1)!;runtime['inventories'].set(session.id,session.inventory);
+   const request={requestId:'bandage-race-injury-01',part:'head',from:0};let release!:()=>void,started!:()=>void;
+   const waiting=new Promise<void>(resolve=>started=resolve),gate=new Promise<void>(resolve=>release=resolve),append=runtime.journal.append.bind(runtime.journal);let held=false;
+   runtime.journal.append=async commit=>{if(!held&&commit.requestId===request.requestId){held=true;started();await gate;}return append(commit);};
+   runtime.command('one',{kind:'bandage',inputSeq:0,request});await waiting;session.character.damage('leftArm',30,'moderate');release();await session.commands;
+   expect(session.character.health.head.bleeding).toBe('none');expect(session.character.health.leftArm).toMatchObject({hp:70,bleeding:'moderate'});
+   await runtime.close();runtime=new WorldRuntime(config,dir,()=>{});await runtime.initialize();await runtime.join('two',{version:1,identity:'bandage-race-browser-01',nickname:'Medic'});
+   expect(runtime.sessions.get('two')!.character.health.leftArm).toMatchObject({hp:70,bleeding:'moderate'});
+  }finally{await runtime.close();rmSync(dir,{recursive:true,force:true});}
+  const deathDir=mkdtempSync(join(tmpdir(),'island-bandage-death-'));runtime=new WorldRuntime(config,deathDir,()=>{});
+  try{
+   await runtime.initialize();clearInterval(runtime['timer']);await runtime.join('one',{version:1,identity:'bandage-death-browser-01',nickname:'Medic'});const session=runtime.sessions.get('one')!;
+   session.character.damage('chest',20,'heavy');session.inventory=addItems(session.inventory,'bandage',1)!;runtime['inventories'].set(session.id,session.inventory);
+   const request={requestId:'bandage-race-death-01',part:'chest',from:0};let release!:()=>void,started!:()=>void;
+   const waiting=new Promise<void>(resolve=>started=resolve),gate=new Promise<void>(resolve=>release=resolve),append=runtime.journal.append.bind(runtime.journal);let held=false;
+   runtime.journal.append=async commit=>{if(!held&&commit.requestId===request.requestId){held=true;started();await gate;}return append(commit);};
+   runtime.command('one',{kind:'bandage',inputSeq:0,request});await waiting;session.character.damage('chest',100);session.character.advanceVitals(CHARACTER.timestep);expect(session.character.respawns).toBe(1);release();await session.commands;
+   expect(session.character.respawns).toBe(1);expect(session.character.health.chest.hp).toBe(100);
+   await runtime.close();runtime=new WorldRuntime(config,deathDir,()=>{});await runtime.initialize();await runtime.join('two',{version:1,identity:'bandage-death-browser-01',nickname:'Medic'});
+   expect(runtime.sessions.get('two')!.character.respawns).toBe(1);expect(runtime.sessions.get('two')!.character.health.chest.hp).toBe(100);
+  }finally{await runtime.close();rmSync(deathDir,{recursive:true,force:true});}
  },30000);
 });

@@ -3,7 +3,7 @@ import type {WorldPatch,WorldAction} from '../shared/destruction';
 import type {BuildObject} from '../shared/object-registry';
 import type {CharacterState} from '../shared/character';
 import type {InventoryState} from '../shared/inventory';
-export interface WorldCommit {kind:'edit'|'build'|'motion'|'support'|'players'|'inventory';patch?:WorldPatch;object?:BuildObject;inventory?:{id:string;state:InventoryState};requestId?:string;fingerprint?:string;analysis?:WorldAction;completeSupport?:string;players?:{id:string;nickname:string;state:CharacterState}[];result?:unknown;receiptFingerprint?:string;motion?:Pick<import('../shared/destruction').SolidRecord,'id'|'revision'|'pose'|'fall'>[]}
+export interface WorldCommit {kind:'edit'|'build'|'motion'|'support'|'players'|'inventory';patch?:WorldPatch;object?:BuildObject;inventory?:{id:string;state:InventoryState};requestId?:string;fingerprint?:string;analysis?:WorldAction;completeSupport?:string;players?:{id:string;nickname:string;state:CharacterState;selectedSlot?:number}[];result?:unknown;receiptFingerprint?:string;motion?:Pick<import('../shared/destruction').SolidRecord,'id'|'revision'|'pose'|'fall'>[]}
 /** Serialization, checksums and fsync run on a separate persistence thread. */
 export class WorldJournal {
  private worker?:Worker;private next=0;private pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>();

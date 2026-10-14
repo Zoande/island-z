@@ -29,7 +29,7 @@ app.innerHTML=`
     <p class="setting-note">3-hour day · 1½-hour night. Set a time or pause the cycle.</p>
     <div class="meta-row field"><label for="quality">Render quality</label><select id="quality"><option value="low" selected>Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
     <p id="quality-description" class="setting-note">${qualityDescriptions.low}</p>
-    <div class="controls"><span><kbd>W A S D</kbd>Move / swim</span><span><kbd>SPACE</kbd>Jump / swim up</span><span><kbd>SHIFT</kbd>Sprint / dive</span><span><kbd>MOUSE</kbd>Look / steer</span><span><kbd>ESC</kbd>Release mouse</span></div>
+    <div class="controls"><span><kbd>W A S D</kbd>Move / swim</span><span><kbd>SPACE</kbd>Jump / swim up</span><span><kbd>SHIFT</kbd>Sprint / dive</span><span><kbd>MOUSE</kbd>Look / steer</span><span><kbd>C</kbd>Tap crouch / stand · Hold crawl</span><span><kbd>ESC</kbd>Release mouse</span></div>
     </div></section>
   <div class="caption"><div id="biome" class="biome">Coastal grassland</div></div>
   <div class="vitals" aria-label="Player vitals"><div class="vital-label"><span>Oxygen</span><span id="oxygen-time">60s</span></div><div id="oxygen" class="oxygen" role="progressbar" aria-label="Oxygen" aria-valuemin="0" aria-valuemax="60">${Array.from({length:6},()=>'<i class="bubble"></i>').join('')}</div><div class="vital-label"><span>Stamina</span><span id="stamina-state"></span></div><div id="stamina" class="stamina" role="progressbar" aria-label="Stamina" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
@@ -100,11 +100,13 @@ async function start() {
     r.quality=(get('quality')as HTMLSelectElement).value as 'low'|'medium'|'high';r.daylightHour=daylight.hour(clockNow());
     multiplayer=new MultiplayerClient(config,camera,r);progress('Joining the world');await multiplayer.ready;building=new BuildingController(camera,world,r,multiplayer.transport);building.network=multiplayer;multiplayer.attach(building);progress('Loading saved builds');await building.initialize();if(currentAttempt!==attempt||failed)return;
     const network=multiplayer,controller=building;
+    controller.select(network.selectedSlot);
     inventory=new InventoryController(camera,{getInventory:()=>network.inventory,getSelected:()=>controller.selected,select:slot=>controller.select(slot),isConnected:()=>network.connected,
       craft:async(recipeId,stationId)=>{const result=await network.command('craft',{requestId:crypto.randomUUID(),recipeId,stationId});if(!result.ok)throw new Error(result.error??'Crafting could not be completed');return result;},
       move:async(from,to)=>{const result=await network.command('move',{requestId:crypto.randomUUID(),from,to});if(!result.ok)throw new Error(result.error??'Items could not be moved');return result;},
+      bandage:async(part,from)=>{const result=await network.command('bandage',{requestId:crypto.randomUUID(),part,from});if(!result.ok)throw new Error(result.error??'Treatment could not be completed');return {ok:true};},
       onOpenChange:open=>{controller.menuOpen=open;controller.update(0);},
-    });inventory.update(network.inventory,100);
+    });inventory.update(network.inventory,camera.character.health);
     stream=new TerrainStream(config,r.profiler.enabled);stream.update(camera.position[0],camera.position[2],r.distance);
     get('status').textContent='Preparing';progress('Preparing the shoreline…');
     const c=camera,s=stream,b=building;
@@ -116,19 +118,19 @@ async function start() {
         const interval=now-last,dt=interval/1000;last=now;r.profiler.begin(interval);
         let stage=r.profiler.mark();multiplayer!.update();r.profiler.endStage('player',stage);stage=r.profiler.mark();fps=fps*.9+1/Math.max(dt,.001)*.1;
         b.update(dt);r.profiler.endStage('building',stage);stage=r.profiler.mark();
-        inventory!.update(multiplayer!.inventory,100);
+        inventory!.update(multiplayer!.inventory,c.character.health);
         if(now-lastStream>350) {s.update(c.position[0],c.position[2],r.distance);lastStream=now;}
         r.profiler.endStage('streaming',stage);
         if(s.error)throw new Error(s.error);
         r.daylightHour=daylight.hour(clockNow());r.render(c,s,multiplayer!.worldTime);
         const player=c.character;
-        if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;get('respawn-note').textContent='Out of oxygen — returned to shore';}
+        if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;const cause=player.lastDeathCause;get('respawn-note').textContent=`${cause==='drowning'?'Drowned':cause==='fall'?'Fatal fall':cause==='bleeding'?'Bled out':'Fatal injury'} — returned to shore`;}
         if(now>noteUntil)get('respawn-note').textContent='';
-        get('oxygen').setAttribute('aria-valuenow',player.oxygen.toFixed(1));get('oxygen-time').textContent=`${Math.ceil(player.oxygen/(player.underwater?player.oxygenDrainRate:1))}s`;
-        document.querySelectorAll<HTMLElement>('.bubble').forEach((bubble,i)=>bubble.style.setProperty('--fill',String(Math.max(0,Math.min(1,player.oxygen/10-i)))));
+        get('oxygen').setAttribute('aria-valuemax',player.oxygenCapacity.toFixed(1));get('oxygen').setAttribute('aria-valuenow',player.oxygen.toFixed(1));get('oxygen-time').textContent=`${Math.ceil(player.oxygen/(player.underwater?player.oxygenDrainRate:1))}s`;
+        document.querySelectorAll<HTMLElement>('.bubble').forEach((bubble,i)=>bubble.style.setProperty('--fill',String(Math.max(0,Math.min(1,player.oxygen/player.oxygenCapacity*6-i)))));
         get('stamina').style.setProperty('--fill',String(player.stamina/100));get('stamina').setAttribute('aria-valuenow',player.stamina.toFixed(1));
         get('stamina-state').textContent=player.exhausted?'Exhausted':player.swimming?'Swimming':'';
-        document.querySelector('.vitals')!.classList.toggle('low-oxygen',player.oxygen<15);
+        document.querySelector('.vitals')!.classList.toggle('low-oxygen',player.oxygen<player.oxygenCapacity*.25);
         if(c.character.ready&&!failed)overlay.classList.add('hidden');
         if(now-lastUI>300) {
           daylightUI();

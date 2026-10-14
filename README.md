@@ -58,7 +58,8 @@ allows about nine minutes of continuous lake swimming or nearly five minutes in
 the ocean. Exhaustion prevents sprinting and makes swimmers sink despite holding
 Space, so long open-ocean swims can end in drowning. Idle sinking is intentionally
 slower than diving. Vitals use elapsed time even if collision terrain is loading.
-Player movement and vitals are server-authoritative; no fall damage is added.
+Player movement and vitals are server-authoritative. Falls and drowning damage
+individual body regions; zero head or chest HP returns the player to shore.
 During an outage, strict mode retains up to two seconds of input history and
 replays it from the server's last acknowledged checkpoint after reconnect. The
 server checks the sequence, elapsed-time budget, current collisions, player
@@ -69,24 +70,33 @@ The server reads `ANTI_CHEAT_ENABLED` from its process environment or a local
 `.env` file. It defaults to `true`; set it to `false` only on a server where you
 trust every player. Trust mode relays bounded client movement snapshots and
 skips server movement simulation and action cadence/stale-revision checks.
-The server still checks action shape and legality, builds canonical geometry,
-and persists edits and placements. The server still raycasts the declared target
-within normal tool reach, so geometry and target-selection work remain.
+Health, bleeding, oxygen, stamina, and fall damage remain server-owned in both
+modes. The server still checks action shape and legality, builds canonical
+geometry, and persists edits and placements. It raycasts declared targets
+within normal tool reach.
 
 ## Building
 
 The bottom-center hotbar has nine inventory slots. **1–9** selects a slot; select
-an empty slot or a resource stack to use your hands. **E** opens a twenty-slot
-pack (five columns, four rows), with Health and Craft tabs beside it. Click a
-stack and a destination to move, merge, or swap items. Stacks hold up to 100.
+an empty slot or a resource stack to use your hands. **E** opens the 29-slot
+inventory, with nine hotbar slots and a twenty-slot pack, plus a separate
+left-hand offhand slot. Click a stack and a destination to move, merge, or swap
+items. Most stacks hold up to 100; crutches stack to one.
 
 Successful mining collects **wood, dirt, sand, and stone**. Hand crafting makes
-walls, floors, torches, and a **crafting desk**. Aim at a placed desk and press
+walls, floors, torches, a **crafting desk**, crutches, and bandages. Aim at a placed desk and press
 **E** to access expanded recipes for roofs, furniture, doors, windows, and more.
 Building consumes a crafted item. Player inventories are private and persisted;
-retries cannot spend or grant an item twice. The segmented Health diagram is a
-foundation for future body injuries. See [inventory and crafting](docs/inventory-and-crafting.md)
+injuries affect movement, building, and tool use, while bandages stop bleeding.
+Inventory and health updates persist together; retries cannot consume a bandage
+twice. See [inventory and crafting](docs/inventory-and-crafting.md)
 for controls and the multiplayer transaction model.
+
+The body HUD shows six regions. Open inventory to inspect injuries and apply
+bandages. Tap **C** to crouch or stand; hold **C** to crawl, or stand directly
+from crawling. Injury-forced crawling cannot be overridden, and crutches prevent
+crouching. See [health, healing, and posture](docs/health.md) for damage thresholds,
+recovery rules, and client-only head injury effects.
 
 Mouse wheel rotates precisely (one
 degree per typical wheel notch); **T** turns 90 degrees; **left click** places.

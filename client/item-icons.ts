@@ -4,4 +4,6 @@ Object.assign(icons,{floor:'<path d="m4 22 16-9 16 9-16 9ZM4 22v5l16 9 16-9v-5M2
 
 Object.assign(icons,{sand:'<path d="M4 29q8-13 16-17 8 4 16 17ZM11 26h.1M19 21h.1M27 26h.1M20 30h.1"/>',dirt:'<path d="m5 20 9-9 17 2 4 12-11 8-15-4ZM5 20l13 4 13-11M18 24l6 9"/>'});
 icons['resource-wood']='<path d="M10 8h22a4 4 0 0 1 0 8H10M10 24h22a4 4 0 0 1 0 8H10"/><circle cx="10" cy="12" r="4"/><circle cx="10" cy="28" r="4"/><path d="M18 10h11M18 26h11"/>';
+icons.crutches='<path d="M5 5h12M7 5l2 13h4l2-13M9 18l2 18M8 14h6M23 5h12M25 5l2 13h4l2-13M27 18l2 18M26 14h6M9 36h4M27 36h4"/>';
+icons.bandage='<path d="m4 14 10-10 22 22-10 10ZM12 13l15 15M15 10l15 15M9 16l15 15M18 17h.1M22 21h.1M26 25h.1"/>';
 export function itemIcon(id:string):string {const key=id==='wood'?'resource-wood':id==='stone'?'rock':objectRegistry.get(id)?.icon??id;return `<svg viewBox="0 0 40 40" aria-hidden="true">${icons[key]??icons.wood}</svg>`;}

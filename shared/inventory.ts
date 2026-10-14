@@ -1,10 +1,10 @@
-import {objectRegistry} from './object-registry';
+import {inventoryItem,objectRegistry} from './object-registry';
 import {primitiveDistance} from './volume';
 import type {SolidPrimitive,SolidSource} from './volume';
 
 export type Resource='wood'|'dirt'|'sand'|'stone';
 export interface ItemStack {item:string;count:number}
-export interface InventoryState {revision:number;slots:(ItemStack|null)[]}
+export interface InventoryState {revision:number;slots:(ItemStack|null)[];offhand?:ItemStack|null}
 export const INVENTORY_SLOTS=29, HOTBAR_SLOTS=9, INVENTORY_STACK=100;
 export type Recipe={id:string;label:string;output:ItemStack;cost:Partial<Record<Resource,number>>;station:'hand'|'desk'};
 
@@ -15,6 +15,8 @@ const recipeDefs:Recipe[]=[
  {id:'floor-wood',label:'Wood floor',output:{item:'floor-wood',count:1},cost:{wood:6},station:'hand'},
  {id:'floor-stone',label:'Stone floor',output:{item:'floor-stone',count:1},cost:{stone:8},station:'hand'},
  {id:'crafting-desk',label:'Crafting desk',output:{item:'crafting-desk',count:1},cost:{wood:10},station:'hand'},
+ {id:'crutches',label:'Crutches',output:{item:'crutches',count:1},cost:{wood:6},station:'hand'},
+ {id:'bandage',label:'Bandage',output:{item:'bandage',count:1},cost:{sand:2,dirt:2},station:'hand'},
  {id:'wall-log',label:'Log wall',output:{item:'wall-log',count:1},cost:{wood:12},station:'desk'},
  {id:'wall-brick',label:'Brick wall',output:{item:'wall-brick',count:1},cost:{stone:8,dirt:6},station:'desk'},
  {id:'roof-wood',label:'Wood roof',output:{item:'roof-wood',count:1},cost:{wood:8},station:'desk'},
@@ -30,17 +32,24 @@ const recipeDefs:Recipe[]=[
 ];
 export const recipesList:readonly Recipe[]=Object.freeze(recipeDefs.map(r=>Object.freeze({...r,output:Object.freeze({...r.output}),cost:Object.freeze({...r.cost})})));
 export const recipes=recipesList;
-export function emptyInventory():InventoryState{return {revision:0,slots:Array.from({length:INVENTORY_SLOTS},()=>null)};}
+export function emptyInventory():InventoryState{return {revision:0,slots:Array.from({length:INVENTORY_SLOTS},()=>null),offhand:null};}
 export function validateInventory(value:unknown):value is InventoryState {
- const v=value as InventoryState;return !!v&&typeof v==='object'&&Number.isSafeInteger(v.revision)&&v.revision>=0&&Array.isArray(v.slots)&&v.slots.length===INVENTORY_SLOTS&&v.slots.every(s=>s===null||!!s&&typeof s.item==='string'&&s.item.length<=64&&Number.isSafeInteger(s.count)&&s.count>0&&s.count<=INVENTORY_STACK&&(Object.hasOwn(resourceItems,s.item)||objectRegistry.has(s.item)));
+ const v=value as InventoryState;return !!v&&typeof v==='object'&&Number.isSafeInteger(v.revision)&&v.revision>=0&&Array.isArray(v.slots)&&v.slots.length===INVENTORY_SLOTS&&v.slots.every(validStack)&&
+  (v.offhand===undefined||v.offhand===null||validStack(v.offhand)&&canEquipOffhand(v.offhand.item));
 }
+const validStack=(s:ItemStack|null):boolean=>s===null||!!s&&typeof s.item==='string'&&s.item.length<=64&&Number.isSafeInteger(s.count)&&s.count>0&&s.count<=stackLimit(s.item)&&(Object.hasOwn(resourceItems,s.item)||objectRegistry.has(s.item)||inventoryItem(s.item)!==undefined);
+const stackLimit=(item:string)=>inventoryItem(item)?.stackLimit??INVENTORY_STACK;
+export function canEquipOffhand(item:string):boolean{return inventoryItem(item)?.offhand===true||recipeDefs.some(recipe=>recipe.output.item===item);}
+/** Normalize older journal snapshots that predate the dedicated offhand slot. */
+export function normalizeInventory(value:InventoryState):InventoryState{return {...value,slots:value.slots.map(s=>s&&({...s})),offhand:value.offhand?{...value.offhand}:null};}
 const resourceItems:Record<Resource,true>={wood:true,dirt:true,sand:true,stone:true};
-export function countItem(inv:InventoryState,item:string){return inv.slots.reduce((n,s)=>n+(s?.item===item?s.count:0),0);}
+export function countItem(inv:InventoryState,item:string){return inv.slots.reduce((n,s)=>n+(s?.item===item?s.count:0),0)+(inv.offhand?.item===item?inv.offhand.count:0);}
 export function addItems(inv:InventoryState,item:string,count:number):InventoryState|null {
  if(!validItem(item)||!Number.isSafeInteger(count)||count<=0)return null;const slots=inv.slots.map(s=>s&&({...s}));let left=count;
- for(let i=0;i<slots.length&&left;i++)if(slots[i]?.item===item&&slots[i]!.count<INVENTORY_STACK){const n=Math.min(left,INVENTORY_STACK-slots[i]!.count);slots[i]!.count+=n;left-=n;}
- for(let i=0;i<slots.length&&left;i++)if(slots[i]===null){const n=Math.min(left,INVENTORY_STACK);slots[i]={item,count:n};left-=n;}
- return left?null:{revision:inv.revision+1,slots};
+ const limit=stackLimit(item);
+ for(let i=0;i<slots.length&&left;i++)if(slots[i]?.item===item&&slots[i]!.count<limit){const n=Math.min(left,limit-slots[i]!.count);slots[i]!.count+=n;left-=n;}
+ for(let i=0;i<slots.length&&left;i++)if(slots[i]===null){const n=Math.min(left,limit);slots[i]={item,count:n};left-=n;}
+ return left?null:{revision:inv.revision+1,slots,offhand:inv.offhand?{...inv.offhand}:null};
 }
 /** Harvesting fills the remaining room; crafting still requires the whole output to fit. */
 export function collectResource(inv:InventoryState,item:Resource,count:number):InventoryState|null {
@@ -48,23 +57,37 @@ export function collectResource(inv:InventoryState,item:Resource,count:number):I
  return room>0?addItems(inv,item,Math.min(room,count)):null;
 }
 export function consumeItem(inv:InventoryState,item:string,count:number):InventoryState|null {
- if(!Number.isSafeInteger(count)||count<=0||countItem(inv,item)<count)return null;const slots=inv.slots.map(s=>s&&({...s}));let left=count;
+ if(!Number.isSafeInteger(count)||count<=0||countItem(inv,item)<count)return null;const slots=inv.slots.map(s=>s&&({...s}));let offhand=inv.offhand&&({...inv.offhand}),left=count;
  for(let i=0;i<slots.length&&left;i++)if(slots[i]?.item===item){const n=Math.min(left,slots[i]!.count);slots[i]!.count-=n;left-=n;if(!slots[i]!.count)slots[i]=null;}
- return {revision:inv.revision+1,slots};
+ if(left&&offhand?.item===item){const n=Math.min(left,offhand.count);offhand.count-=n;left-=n;if(!offhand.count)offhand=null;}
+ return left?null:{revision:inv.revision+1,slots,offhand};
 }
+/** Consume from one user-selected pack slot or virtual offhand slot (29). */
+export function consumeInventorySlot(inv:InventoryState,index:number,item:string,count:number):InventoryState|null {
+ if(!Number.isInteger(index)||index<0||index>INVENTORY_SLOTS||!Number.isSafeInteger(count)||count<=0)return null;
+ const source=index===INVENTORY_SLOTS?inv.offhand:inv.slots[index];if(!source||source.item!==item||source.count<count)return null;
+ const slots=inv.slots.map(s=>s&&({...s}));let offhand=inv.offhand&&({...inv.offhand});
+ if(index===INVENTORY_SLOTS){offhand!.count-=count;if(!offhand!.count)offhand=null;}else{slots[index]!.count-=count;if(!slots[index]!.count)slots[index]=null;}
+ return {revision:inv.revision+1,slots,offhand};
+}
+export function consumeFromSlot(inv:InventoryState,index:number,item:string,count=1):InventoryState|null{return consumeInventorySlot(inv,index,item,count);}
 export function craftRecipe(inv:InventoryState,recipeId:string):InventoryState|null {
  const recipe=recipesList.find(r=>r.id===recipeId);if(!recipe)return null;let next=inv;
  for(const [item,count]of Object.entries(recipe.cost)) {const updated=consumeItem(next,item,count!);if(!updated)return null;next=updated;}
  const output=addItems(next,recipe.output.item,recipe.output.count);return output?{...output,revision:inv.revision+1}:null;
 }
 export function moveInventory(inv:InventoryState,from:number,to:number,count?:number):InventoryState|null {
- if(!Number.isInteger(from)||!Number.isInteger(to)||from<0||to<0||from>=INVENTORY_SLOTS||to>=INVENTORY_SLOTS||from===to)return null;
- const source=inv.slots[from];if(!source)return null;let amount=count??source.count;if(!Number.isSafeInteger(amount)||amount<=0||amount>source.count)return null;const slots=inv.slots.map(s=>s&&({...s})),target=slots[to];
- if(target&&target.item!==source.item){if(count!==undefined)return null;slots[from]=target;slots[to]=source;return {revision:inv.revision+1,slots};}
- if(target&&count===undefined)amount=Math.min(amount,INVENTORY_STACK-target.count);if(amount<=0||target&&target.count+amount>INVENTORY_STACK)return null;
- slots[to]=target?{item:target.item,count:target.count+amount}:{item:source.item,count:amount};if(amount===source.count)slots[from]=null;else slots[from]={item:source.item,count:source.count-amount};return {revision:inv.revision+1,slots};
+ if(!Number.isInteger(from)||!Number.isInteger(to)||from<0||to<0||from>INVENTORY_SLOTS||to>INVENTORY_SLOTS||from===to)return null;
+ const slots=inv.slots.map(s=>s&&({...s}));let offhand=inv.offhand&&({...inv.offhand});
+ const get=(index:number)=>index===INVENTORY_SLOTS?offhand:slots[index],set=(index:number,value:ItemStack|null)=>{if(index===INVENTORY_SLOTS)offhand=value;else slots[index]=value;};
+ const source=get(from);if(!source)return null;let amount=count??source.count;if(!Number.isSafeInteger(amount)||amount<=0||amount>source.count)return null;
+ const target=get(to);if(to===INVENTORY_SLOTS&&!canEquipOffhand(source.item))return null;
+ if(target&&target.item!==source.item){if(count!==undefined||from===INVENTORY_SLOTS&&!canEquipOffhand(target.item))return null;set(from,target);set(to,source);return {revision:inv.revision+1,slots,offhand};}
+ const limit=to===INVENTORY_SLOTS?stackLimit(source.item):stackLimit(source.item);
+ if(target&&count===undefined)amount=Math.min(amount,limit-target.count);if(amount<=0||target&&target.count+amount>limit)return null;
+ set(to,target?{item:target.item,count:target.count+amount}:{item:source.item,count:amount});if(amount===source.count)set(from,null);else set(from,{item:source.item,count:source.count-amount});return {revision:inv.revision+1,slots,offhand};
 }
-function validItem(item:string):boolean{return Object.hasOwn(resourceItems,item)||objectRegistry.has(item);}
+function validItem(item:string):boolean{return Object.hasOwn(resourceItems,item)||objectRegistry.has(item)||inventoryItem(item)!==undefined;}
 /** Yields only follow a successful destructive edit, so repairing cannot mint items. */
 export function resourceYield(prop:{kind:string;x?:number;y?:number;z?:number},source?:SolidSource,point?:readonly[number,number,number]):{item:Resource;count:number}|null {
  if(prop.kind==='oak'||prop.kind==='birch'||prop.kind==='palm')return {item:'wood',count:3};

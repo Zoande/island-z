@@ -3,6 +3,14 @@ import type {Point3} from './rocks';
 
 export const OBJECT_SCHEMA_VERSION=1;
 export type BuiltKind='wall-wood'|'wall-stone'|'wall-log'|'wall-brick'|'floor-wood'|'floor-stone'|'roof-wood'|'roof-stone'|'torch'|'torch-wall'|'campfire'|'bed'|'table'|'crafting-desk'|'chair'|'door-wood'|'door-reinforced'|'window';
+/** Inventory-only items are not world objects and cannot be placed as props. */
+export interface InventoryItemDefinition {readonly id:'crutches'|'bandage';readonly label:string;readonly icon:string;readonly stackLimit:number;readonly offhand:boolean}
+const inventoryItemDefinitions:readonly InventoryItemDefinition[]=Object.freeze([
+  Object.freeze({id:'crutches',label:'Crutches',icon:'crutches',stackLimit:1,offhand:true}),
+  Object.freeze({id:'bandage',label:'Bandage',icon:'bandage',stackLimit:100,offhand:false}),
+]);
+export const inventoryItems:ReadonlyMap<string,InventoryItemDefinition>=new Map(inventoryItemDefinitions.map(item=>[item.id,item]));
+export function inventoryItem(id:string):InventoryItemDefinition|undefined{return inventoryItems.get(id);}
 export interface ObjectBox {center:Point3;size:Point3}
 export interface ObjectVariant {kind:Prop['kind'];model:number;scale:number}
 export interface ObjectDefinition {

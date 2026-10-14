@@ -37,6 +37,7 @@ export class BuildingController {
   }
   select(slot:number) {
     if(!Number.isInteger(slot)||slot<0||slot>=9)return;this.selected=slot;this.rotation=0;this.tilt=0;this.noticeUntil=0;
+    this.network?.selectSlot(slot);
     this.variant=0;
     this.previewSignature='';this.update(0);
   }
@@ -44,7 +45,7 @@ export class BuildingController {
   private adjustTilt(angle:number){this.tilt=Math.max(-Math.PI/6,Math.min(Math.PI/6,this.tilt+angle));this.previewSignature='';this.update(0);}
   private request(id='preview-00000000'):BuildRequest {
     return {requestId:id,worldKey:this.worldKey,definitionId:this.definitionId!,variant:this.variant,rotation:this.rotation,tilt:this.definitionId&&objectDefinition(this.definitionId).family==='floor'?this.tilt:undefined,
-      eye:[...this.camera.position]as [number,number,number],direction:this.camera.forward,feet:[...this.camera.character.feet]as [number,number,number],standing:this.camera.character.grounded&&!this.camera.character.swimming};
+      eye:[...this.camera.position]as [number,number,number],direction:this.camera.forward,feet:[...this.camera.character.feet]as [number,number,number],standing:this.camera.character.grounded&&!this.camera.character.swimming&&!this.camera.character.crawling};
   }
   get worldIdentity(){return this.worldKey;}
   visibleCells(){return this.wantedCells();}
@@ -52,9 +53,10 @@ export class BuildingController {
     this.destruction.update();
     const now=performance.now(),look=`${this.camera.position.join(',')}/${this.camera.yaw}/${this.camera.pitch}`;
     if(look!==this.previousLook){this.previousLook=look;this.lastMotion=now;}
-    const id=this.definitionId,signature=`${look}/${id}/${this.variant}/${this.rotation}/${this.tilt}/${this.scene.revision}/${this.camera.character.grounded}/${this.connection}/${this.destruction.active}/${this.menuOpen}`;
+    const id=this.definitionId,signature=`${look}/${id}/${this.variant}/${this.rotation}/${this.tilt}/${this.scene.revision}/${this.camera.character.grounded}/${this.camera.character.crawling}/${this.camera.character.effects.canBuild}/${this.connection}/${this.destruction.active}/${this.menuOpen}`;
     if(signature!==this.previewSignature) {
       this.previewSignature=signature;this.preview=id&&!this.menuOpen&&!this.destruction.active&&this.camera.character.ready?solvePlacement(this.scene,this.request()):null;
+      if(this.preview&&!this.camera.character.effects.canBuild){this.preview.valid=false;this.preview.reason='Your injuries prevent building';}
       if(this.preview&&this.connection!=='Connected'){this.preview.valid=false;this.preview.reason=this.connection==='Connecting'?'Connecting building service':this.worldChanged?'World changed · refresh to build':'Building unavailable · retrying';}
     }
     const interactionSignature=`${look}/${this.scene.revision}`;if(interactionSignature!==this.interactionSignature){this.interactionSignature=interactionSignature;this.interaction=null;

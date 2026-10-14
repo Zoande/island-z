@@ -8,15 +8,28 @@ import type {WorldPatch,SolidRecord} from '../shared/destruction';
 import {solidCells} from '../shared/destruction';
 import {closeForReconnect} from './socket-close';
 import {mayPredictDuringReconnect,trimAcknowledgedInputs,MAX_RECONNECT_INPUTS} from './reconnect-policy';
+import {emptyInventory,validateInventory,normalizeInventory} from '../shared/inventory';
+import type {CharacterState} from '../shared/character';
 let socket:WebSocket|undefined,scene:BuildScene,environment:SimulationEnvironment,character:Character;
 let identity='',nickname='',endpoint='',api='',connection='',worldKey='',input:CharacterInput=idleInput,seq=0,ack=0,simTime=0,serverTime=0,serverTick=0,connected=false,stopped=false,antiCheatEnabled=true,sessionEpoch=0;
 let last=performance.now(),accumulator=0,lastSend=0,lastState=0,lastPing=0,backoff=500,retry=0,resumeToken='';
 let disconnectedAt:number|undefined;
+let inventory=emptyInventory(),selectedSlot=8;
 let history:InputStep[]=[],outgoing:InputStep[]=[],remote=new Map<string,PlayerState>(),generation=0,wanted:string[]=[],subscription:Promise<void>=Promise.resolve(),subscribeResolve:()=>void=()=>{},subscribeReject:(e:Error)=>void=()=>{},buffered:any[]=[],bufferedBytes=0,loading=0,latestPlayers:any;
 const commands=new Map<string,{rpc:number;request:any;kind:string;sent:number}>();
 const metrics={sentBytes:0,receivedBytes:0,messages:0};
 let lastMetrics=0;
 function post(type:string,value:any={}){self.postMessage({type,...value});}
+function applyHands(slot=selectedSlot){character?.setHands(inventory.slots[slot]?.item,inventory.offhand?.item);}
+function rememberInventory(value:unknown){if(validateInventory(value)&&value.revision>=inventory.revision)inventory=normalizeInventory(value);applyHands();}
+function simulateStep(step:InputStep){applyHands(step.input.slot??selectedSlot);character.update(CHARACTER.timestep,step.input);}
+function reconcileOwn(state:CharacterState,time:number){
+ const respawn=state.respawns!==character.respawns;
+ if(antiCheatEnabled||respawn){character.restore(state);simTime=time;if(antiCheatEnabled)for(const h of history){simulateStep(h);simTime+=CHARACTER.timestep;}}
+ else character.restore({...character.capture(),health:state.health,oxygen:state.oxygen,oxygenDrainRate:state.oxygenDrainRate,stamina:state.stamina,exhausted:state.exhausted,lastDeathCause:state.lastDeathCause,drowningTime:state.drowningTime});
+ applyHands();
+ if(respawn)input={...idleInput,slot:selectedSlot};
+}
 function send(m:any){if(socket?.readyState!==WebSocket.OPEN)return false;if(socket.bufferedAmount>128*1024){closeForReconnect(socket,'Send queue full');return false;}const bytes=encodeMessage(m);metrics.sentBytes+=bytes.length;socket.send(bytes);return true;}
 function flushInputs(drain=false){if(!connected)return false;do{if(!outgoing.length)return true;const steps=outgoing.slice(0,24),drainsQueue=steps.length===outgoing.length;const sent=send({type:'inputs',steps,...(!antiCheatEnabled&&drainsQueue?{state:character.capture(),stateSeq:steps[steps.length-1].seq}:{})});if(!sent)return false;outgoing.splice(0,steps.length);}while(drain&&outgoing.length);return outgoing.length===0;}
 function applyWorld(m:any){
@@ -28,10 +41,11 @@ function applyWorld(m:any){
 }
 function onMessage(m:any,bytes=0){
  if(m.type==='hello'){connection=m.connection;const steps=resumeToken?history.slice(0,MAX_RECONNECT_INPUTS):[];send({type:'join',version:PROTOCOL_VERSION,identity,nickname,...(resumeToken?{resumeToken,resumeSteps:steps}:{})});return;}
- if(m.type==='welcome'){if(worldKey&&worldKey!==m.worldKey){stopped=true;socket?.close();post('fatal',{error:'The server world changed; reload to join it'});return;}sessionEpoch++;loading=0;buffered=[];bufferedBytes=0;worldKey=m.worldKey;antiCheatEnabled=m.antiCheatEnabled!==false;character.restore(m.state);history=[];outgoing=[];remote.clear();latestPlayers=undefined;resumeToken=typeof m.resumeToken==='string'?m.resumeToken:'';seq=ack=Number.isSafeInteger(m.ack)?m.ack:0;simTime=serverTime=m.time;serverTick=m.tick;connected=true;disconnectedAt=undefined;backoff=500;last=performance.now();accumulator=0;post('welcome',{message:m});if(wanted.length)subscribe(wanted,true);for(const [id,c]of commands){if(performance.now()-c.sent>30000){commands.delete(id);self.postMessage({rpc:c.rpc,error:'Confirmation expired; refresh world state before retrying'});}else send({type:'command',kind:c.kind,request:c.request,inputSeq:0});}return;}
+ if(m.type==='welcome'){if(worldKey&&worldKey!==m.worldKey){stopped=true;socket?.close();post('fatal',{error:'The server world changed; reload to join it'});return;}sessionEpoch++;loading=0;buffered=[];bufferedBytes=0;worldKey=m.worldKey;antiCheatEnabled=m.antiCheatEnabled!==false;selectedSlot=m.selectedSlot??selectedSlot;rememberInventory(m.inventory);character.restore(m.state);applyHands();history=[];outgoing=[];remote.clear();latestPlayers=undefined;resumeToken=typeof m.resumeToken==='string'?m.resumeToken:'';seq=ack=Number.isSafeInteger(m.ack)?m.ack:0;simTime=serverTime=m.time;serverTick=m.tick;connected=true;disconnectedAt=undefined;backoff=500;last=performance.now();accumulator=0;post('welcome',{message:m});if(wanted.length)subscribe(wanted,true);for(const [id,c]of commands){if(performance.now()-c.sent>30000){commands.delete(id);self.postMessage({rpc:c.rpc,error:'Confirmation expired; refresh world state before retrying'});}else send({type:'command',kind:c.kind,request:c.request,inputSeq:0});}return;}
  if(m.type==='subscribed'){if(m.generation===generation)subscribeResolve();return;}
- if(m.type==='inventory'){post('inventory',{inventory:m.inventory,requestId:m.requestId});return;}
- if(m.type==='players'){serverTick=m.tick;serverTime=m.time;const own=m.players.find((p:PlayerState)=>p.id===identity);if(own){ack=own.ack;history=trimAcknowledgedInputs(history,ack);}if(loading){latestPlayers=m;return;}remote=new Map(m.players.map((p:PlayerState)=>[p.id,p]));if(own){const correction=antiCheatEnabled?Math.hypot(...own.state.feet.map((v:number,i:number)=>v-character.feet[i])):0;if(antiCheatEnabled){character.restore(own.state);simTime=m.time;for(const h of history){character.update(CHARACTER.timestep,h.input);simTime+=CHARACTER.timestep;}}post('players',{message:m,correction,pending:history.length,receivedAt:performance.timeOrigin+performance.now()});}return;}
+ if(m.type==='inventory'){rememberInventory(m.inventory);post('inventory',{inventory:m.inventory,requestId:m.requestId});return;}
+ if(m.type==='health'){ack=Number.isSafeInteger(m.ack)?m.ack:ack;history=trimAcknowledgedInputs(history,ack);if(m.state)reconcileOwn(m.state,m.time??simTime);post('state',{state:character.capture(),time:simTime,connected});return;}
+ if(m.type==='players'){serverTick=m.tick;serverTime=m.time;const own=m.players.find((p:PlayerState)=>p.id===identity);if(own){ack=own.ack;history=trimAcknowledgedInputs(history,ack);}if(loading){latestPlayers=m;return;}remote=new Map(m.players.map((p:PlayerState)=>[p.id,p]));if(own){const correction=antiCheatEnabled?Math.hypot(...own.state.feet.map((v:number,i:number)=>v-character.feet[i])):0;reconcileOwn(own.state,m.time);post('players',{message:m,correction,pending:history.length,receivedAt:performance.timeOrigin+performance.now()});}return;}
  if(loading&&(m.type==='world'||m.type==='motion')){if(buffered.length>=128||(bufferedBytes+=bytes)>8*1024*1024){closeForReconnect(socket,'Region replay queue exceeded');return;}buffered.push(m);return;}
  if(m.type==='world'){applyWorld(m);return;}
  if(m.type==='motion'){for(const v of m.states){const r=scene.edits.get(v.id);if(r&&r.revision===v.revision){const next={...r,pose:v.pose,fall:v.fall};scene.edits.set(v.id,next);environment.pose(next);}}post('motion',{message:m});return;}
@@ -49,14 +63,15 @@ async function baseline(cells:string[]){const g=generation;await subscription;if
 }
 self.onmessage=async(e:MessageEvent)=>{const m=e.data;try{
  if(m.type==='start'){await initializePhysics();identity=m.identity;nickname=m.nickname;endpoint=m.endpoint;api=m.api;scene=new BuildScene(new WorldGenerator(m.config));environment=new SimulationEnvironment(scene,identity,()=>[...remote.values()].map(p=>({id:p.id,feet:p.state.feet})),()=>simTime);character=new Character(environment);connect();}
- else if(m.type==='input')input=m.input;
+ else if(m.type==='input')input={...m.input,slot:selectedSlot};
+ else if(m.type==='slot'&&Number.isInteger(m.slot)&&m.slot>=0&&m.slot<9){selectedSlot=m.slot;input={...input,slot:selectedSlot};applyHands();}
  else if(m.type==='interest')subscribe(m.cells);
  else if(m.type==='baseline')self.postMessage({rpc:m.rpc,value:await baseline(m.cells)});
  else if(m.type==='command'){if(!connected)throw new Error('World disconnected; reconnecting');if(!flushInputs(true))throw new Error('Input backlog could not be sent; retry the action');commands.set(m.request.requestId,{rpc:m.rpc,request:m.request,kind:m.kind,sent:performance.now()});if(!send({type:'command',kind:m.kind,request:m.request,inputSeq:seq})){commands.delete(m.request.requestId);throw new Error('Action could not be sent; retry');}}
  else if(m.type==='stop'){stopped=true;socket?.close();environment?.dispose();}
  }catch(error){if(m.rpc)self.postMessage({rpc:m.rpc,error:String(error)});else post('status',{connected:false,error:String(error)});}};
-setInterval(()=>{const now=performance.now();if(stopped)return;if(!connected){if(character&&socket?.readyState===WebSocket.CLOSED&&now>=retry)connect();if(character&&mayPredictDuringReconnect(disconnectedAt,now)){accumulator+=Math.min(.1,(now-last)/1000);last=now;let count=0;while(accumulator>=CHARACTER.timestep&&count++<12){accumulator-=CHARACTER.timestep;if(antiCheatEnabled){if(history.length>=MAX_RECONNECT_INPUTS){socket?.close();break;}const step={seq:++seq,input:{...input,swimVector:input.swimVector&&[...input.swimVector]as [number,number,number]}};history.push(step);character.update(CHARACTER.timestep,step.input);}else character.update(CHARACTER.timestep,input);simTime+=CHARACTER.timestep;}if(now-lastState>=1000/60){lastState=now;post('state',{state:character.capture(),time:simTime,connected:false});}}return;}
- accumulator+=Math.min(.1,(now-last)/1000);last=now;let count=0;while(accumulator>=CHARACTER.timestep&&count++<12){accumulator-=CHARACTER.timestep;if(history.length>=120){closeForReconnect(socket,'Prediction queue exceeded');break;}const step={seq:++seq,input:{...input,swimVector:input.swimVector&&[...input.swimVector]as [number,number,number]}};character.update(CHARACTER.timestep,step.input);simTime+=CHARACTER.timestep;history.push(step);outgoing.push(step);}
+setInterval(()=>{const now=performance.now();if(stopped)return;if(!connected){if(character&&socket?.readyState===WebSocket.CLOSED&&now>=retry)connect();if(character&&mayPredictDuringReconnect(disconnectedAt,now)){accumulator+=Math.min(.1,(now-last)/1000);last=now;let count=0;while(accumulator>=CHARACTER.timestep&&count++<12){accumulator-=CHARACTER.timestep;if(antiCheatEnabled){if(history.length>=MAX_RECONNECT_INPUTS){socket?.close();break;}const step={seq:++seq,input:{...input,slot:selectedSlot,swimVector:input.swimVector&&[...input.swimVector]as [number,number,number]}};history.push(step);simulateStep(step);}else character.update(CHARACTER.timestep,input);simTime+=CHARACTER.timestep;}if(now-lastState>=1000/60){lastState=now;post('state',{state:character.capture(),time:simTime,connected:false});}}return;}
+ accumulator+=Math.min(.1,(now-last)/1000);last=now;let count=0;while(accumulator>=CHARACTER.timestep&&count++<12){accumulator-=CHARACTER.timestep;if(history.length>=120){closeForReconnect(socket,'Prediction queue exceeded');break;}const step={seq:++seq,input:{...input,slot:selectedSlot,swimVector:input.swimVector&&[...input.swimVector]as [number,number,number]}};simulateStep(step);simTime+=CHARACTER.timestep;history.push(step);outgoing.push(step);}
  if(now-lastSend>=1000/30){lastSend=now;flushInputs();}if(now-lastState>=1000/60){lastState=now;post('state',{state:character.capture(),time:simTime,connected});}if(now-lastPing>=5000){lastPing=now;send({type:'ping',sent:now});}
  if(now-lastMetrics>1000){lastMetrics=now;post('metrics',{...metrics,serverTick,pending:history.length});}
  for(const [id,c]of commands)if(now-c.sent>30000){commands.delete(id);self.postMessage({rpc:c.rpc,error:'Confirmation expired; reload the authoritative region before retrying'});}

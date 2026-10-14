@@ -10,12 +10,17 @@ import {decodeMessage,encodeMessage,PROTOCOL_VERSION} from '../shared/network';
 import {BuildStore} from '../server/build-store';
 import {WorldJournal} from '../server/journal';
 import {emptyInventory,addItems,countItem} from '../shared/inventory';
+import {Character} from '../shared/character';
+import {worldSpawn} from '../shared/spawn';
 
 mkdirSync('artifacts',{recursive:true});
 const origin='http://127.0.0.1:4118',prefix=resolve('artifacts/network-worker-'),directory=mkdtempSync(prefix);
-// Test-only materials exercise real worker crafting and private inventory events.
+// Test-only inventory and injury exercise real worker crafting, equipment,
+// treatment, and private health events.
 const fixtureWorld=new BuildStore({seed:'network-worker-check',islandSizeMeters:1024}),fixtureJournal=new WorldJournal(directory,fixtureWorld.worldKey);
-await fixtureJournal.loadWorld();await fixtureJournal.append({kind:'inventory',inventory:{id:'worker-test-client-00001',state:addItems(emptyInventory(),'wood',10)!}});await fixtureJournal.close();
+const fixtureCharacter=new Character({} as any);fixtureCharacter.spawn(...worldSpawn(fixtureWorld.scene));fixtureCharacter.damage('leftLeg',80,'heavy');
+let fixtureInventory=emptyInventory();for(const [item,count] of [['wood',10],['sand',4],['dirt',4],['crutches',1],['bandage',2]] as const)fixtureInventory=addItems(fixtureInventory,item,count)!;
+await fixtureJournal.loadWorld();await fixtureJournal.append({kind:'players',players:[{id:'worker-test-client-00001',nickname:'Worker',state:fixtureCharacter.capture(),selectedSlot:8}],inventory:{id:'worker-test-client-00001',state:fixtureInventory}});await fixtureJournal.close();
 const server=createWorldServer({seed:'network-worker-check',islandSizeMeters:1024},{saveDirectory:directory,origins:[origin]});
 await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
 const api=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -47,11 +52,15 @@ try{
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.type==='welcome')).catch(async error=>{report.startDebug=await page.evaluate(()=>({workerErrors:(window as any).__workerErrors,messages:(window as any).__workerMessages}));report.browserErrors=browserErrors;report.viteOutput=output;throw error;});
  const firstWelcome=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.type==='welcome').message);
  if(countItem(firstWelcome.inventory,'wood')!==10)throw new Error('Worker welcome missed its private inventory');
+ if(firstWelcome.selectedSlot!==8)throw new Error(`Saved hotbar selection was not restored (${firstWelcome.selectedSlot})`);
+ if(!firstWelcome.state.health||Object.keys(firstWelcome.state.health).length!==6||firstWelcome.state.health.leftLeg.hp!==20||firstWelcome.state.health.leftLeg.bleeding!=='heavy')throw new Error('Worker welcome missed the saved six-part injury state');
+ if(!firstWelcome.state.crawling)throw new Error('The badly injured leg did not begin in a crawl without crutches');
  await page.evaluate(()=>((window as any).__worker).postMessage({type:'command',rpc:20,kind:'craft',request:{requestId:'worker-craft-torch-0001',recipeId:'torch'}}));
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===20));
  const crafted=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===20));
  if(!crafted.value?.ok||countItem(crafted.value.inventory,'torch')!==2||countItem(crafted.value.inventory,'wood')!==8)throw new Error('Worker did not craft and spend the exact resources');
- await page.evaluate(()=>((window as any).__worker).postMessage({type:'command',rpc:21,kind:'move',request:{requestId:'worker-move-torch-0001',from:1,to:9}}));
+ const torchSlot=crafted.value.inventory.slots.findIndex((s:any)=>s?.item==='torch');if(torchSlot<0)throw new Error('Crafted torch stack has no inventory slot');
+ await page.evaluate(({torchSlot})=>((window as any).__worker).postMessage({type:'command',rpc:21,kind:'move',request:{requestId:'worker-move-torch-0001',from:torchSlot,to:9}}),{torchSlot});
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===21));
  const movedInventory=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===21));
  if(!movedInventory.value?.ok||movedInventory.value.inventory.slots[9]?.item!=='torch')throw new Error('Worker inventory move did not reach the pack');
@@ -66,6 +75,31 @@ try{
  await waitPeer('hello');peer.send(encodeMessage({type:'join',version:PROTOCOL_VERSION,identity:'worker-test-peer-00002',nickname:'Peer'}));
  const peerWelcome=await waitPeer('welcome');const peerCell=`${Math.floor(peerWelcome.state.feet[0]/512)}:${Math.floor(peerWelcome.state.feet[2]/512)}`;
  peer.send(encodeMessage({type:'subscribe',cells:[peerCell],generation:1}));await waitPeer('subscribed');
+ const crutchSlot=movedInventory.value.inventory.slots.findIndex((s:any)=>s?.item==='crutches');if(crutchSlot<0)throw new Error('Saved crutches are missing from inventory');
+ await page.evaluate(({crutchSlot})=>((window as any).__worker).postMessage({type:'command',rpc:22,kind:'move',request:{requestId:'worker-equip-crutches-001',from:crutchSlot,to:29}}),{crutchSlot});
+ await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===22));const equipped=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===22));
+ if(!equipped.value?.ok||equipped.value.inventory.offhand?.item!=='crutches'||equipped.value.inventory.offhand.count!==1)throw new Error('Crutches did not move to the dedicated offhand slot');
+ await page.evaluate(()=>((window as any).__worker).postMessage({type:'input',input:{x:0,z:0,sprint:false,jump:false,stance:'stand'}}));
+ const noLongerForcedToCrawl=await waitPeer('players',m=>m.players.some((p:any)=>p.id==='worker-test-client-00001'&&p.ack>0&&!p.state.crawling));
+ if(noLongerForcedToCrawl.players.find((p:any)=>p.id==='worker-test-client-00001').state.health.leftLeg.hp>30)throw new Error('Crutches stopped crawling only because the injury healed');
+ const sendStance=async(stance:'crouch'|'crawl'|'stand',expected:'stand'|'crawl')=>{
+  const previous=(peerEvents.filter(m=>m.type==='players').at(-1)?.players.find((p:any)=>p.id==='worker-test-client-00001')?.ack??0);
+  await page.evaluate(({stance})=>((window as any).__worker).postMessage({type:'input',input:{x:0,z:0,sprint:false,jump:false,stance}}),{stance});
+  return waitPeer('players',m=>m.players.some((p:any)=>p.id==='worker-test-client-00001'&&p.ack>previous+2&&p.state.stanceIntent===expected));
+ };
+ const crouch=await sendStance('crouch','stand'),crouchedPlayer=crouch.players.find((p:any)=>p.id==='worker-test-client-00001');if(crouchedPlayer.state.stanceIntent!=='stand'||crouchedPlayer.state.crawling)throw new Error('Equipped crutches allowed an unsupported crouch intent');
+ const crawl=await sendStance('crawl','crawl');if(!crawl.players.find((p:any)=>p.id==='worker-test-client-00001').state.crawling)throw new Error('Manual crawling did not work with equipped crutches');
+ const stand=await sendStance('stand','stand'),standingPlayer=stand.players.find((p:any)=>p.id==='worker-test-client-00001');if(standingPlayer.state.crawling)throw new Error(`Standing did not restore after manual crawling: ${JSON.stringify(standingPlayer.state)}`);
+ const bandageSlot=equipped.value.inventory.slots.findIndex((s:any)=>s?.item==='bandage');if(bandageSlot<0)throw new Error('Saved bandages are missing from inventory');
+ await page.evaluate(({bandageSlot})=>((window as any).__worker).postMessage({type:'command',rpc:23,kind:'bandage',request:{requestId:'worker-bandage-left-leg-001',part:'leftLeg',from:bandageSlot}}),{bandageSlot});
+ await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===23));const treated=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===23));
+ if(!treated.value?.ok||countItem(treated.value.inventory,'bandage')!==1||treated.value.inventory.offhand?.item!=='crutches')throw new Error('Bandage did not consume exactly one item while preserving offhand crutches');
+ await waitFor(()=>{const m=[...(window as any).__workerMessages as any[]].reverse().find(m=>m.type==='state'&&m.state?.health?.leftLeg?.bleeding==='none');return !!m;});
+ const treatedState=await page.evaluate(()=>[...(window as any).__workerMessages as any[]].reverse().find(m=>m.type==='state'&&m.state?.health?.leftLeg?.bleeding==='none').state);
+ if(treatedState.health.leftLeg.hp>30||treatedState.health.leftLeg.healingCap!==70||!treatedState.health.leftLeg.healingCapTime||treatedState.health.leftLeg.bandagedTime<=0)throw new Error('Private bandage health state did not stop bleeding and preserve the heavy-wound cap');
+ const serverTreated=await waitPeer('players',m=>m.players.some((p:any)=>p.id==='worker-test-client-00001'&&p.ack>=stand.players.find((q:any)=>q.id==='worker-test-client-00001').ack&&p.state.health.leftLeg.bleeding==='none'));
+ const treatedPlayer=serverTreated.players.find((p:any)=>p.id==='worker-test-client-00001');if(treatedPlayer.state.health.leftLeg.healingCap!==70)throw new Error('Server player snapshot missed the bandage health update');
+ report.injury={healthSegments:Object.keys(firstWelcome.state.health).length,leftLegBefore:firstWelcome.state.health.leftLeg,crutchesOffhand:true,walkingWithoutForcedCrawl:true,manualCrawlThenStand:true,bandageConsumed:1,bleedingStopped:true,heavyWoundCap:treatedPlayer.state.health.leftLeg.healingCap};
  await page.evaluate(({cell})=>{const w=(window as any).__worker;w.postMessage({type:'interest',cells:[cell]});w.postMessage({type:'baseline',rpc:1,cells:[cell]});w.postMessage({type:'input',input:{x:0,z:1,sprint:false,jump:false}});}, {cell});
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.type==='players'&&m.message.players.some((p:any)=>p.id==='worker-test-client-00001')));
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===1));const baseline=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===1));if(baseline?.error)throw new Error(baseline.error);
@@ -100,10 +134,12 @@ try{
  await waitFor(()=>((window as any).__workerMessages??[]).filter((m:any)=>m.type==='welcome').length>=2,30000);
  const reconnectedWelcome=await page.evaluate(()=>[...(window as any).__workerMessages as any[]].filter(m=>m.type==='welcome').at(-1).message);
  if(!reconnectedWelcome.resumeAccepted)throw new Error(`Server rejected reconnect replay (${reconnectedWelcome.resumeReason}; inputs=${reconnectedWelcome.resumeInputCount??0})`);
- if(reconnectedWelcome.inventory.slots[9]?.item!=='torch'||countItem(reconnectedWelcome.inventory,'wood')!==8)throw new Error('Reconnect lost the crafted inventory');
+ if(reconnectedWelcome.inventory.slots[9]?.item!=='torch'||countItem(reconnectedWelcome.inventory,'wood')!==8||reconnectedWelcome.inventory.offhand?.item!=='crutches'||countItem(reconnectedWelcome.inventory,'bandage')!==1)throw new Error('Reconnect lost the crafted/equipped inventory');
+ if(reconnectedWelcome.selectedSlot!==8||reconnectedWelcome.state.health.leftLeg.bleeding!=='none'||reconnectedWelcome.state.health.leftLeg.hp>30)throw new Error('Reconnect lost selected slot or bandaged injury state');
  const correction=Math.hypot(reconnectedWelcome.state.feet[0]-serverState[0],reconnectedWelcome.state.feet[2]-serverState[2]);
- if(correction<.15||correction>10.7)throw new Error(`Reconnect did not count bounded server-checked offline movement (${correction.toFixed(2)}m)`);
+ if(correction<.15||correction>7)throw new Error(`Reconnect did not count bounded server-checked offline movement (${correction.toFixed(2)}m)`);
  report.reconnect={serverState,offlineMoved,reconnected:reconnectedWelcome.state.feet,acceptedOfflineDistance:correction,replayedInputs:reconnectedWelcome.resumeInputCount,graceMs:2000};
+ report.reconnect.health={leftLeg:reconnectedWelcome.state.health.leftLeg,bandages:countItem(reconnectedWelcome.inventory,'bandage'),offhand:reconnectedWelcome.inventory.offhand,selectedSlot:reconnectedWelcome.selectedSlot};
  if(protocolErrors.length)throw new Error(protocolErrors.join('\n'));report.passed=true;
 }finally{
  report.delayedBaselineRequests=delayedBaselineCount;
