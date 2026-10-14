@@ -35,5 +35,15 @@ describe('solid geometry and collision foundations',()=>{
       }finally{physics.dispose();}
     }
   });
+  it('updates the capsule when posture changes under an edited ceiling',async()=>{
+    await initializePhysics();const physics=new SolidPhysics(),record=recordFor('low-ceiling',{kind:'wall-wood',x:0,y:0,z:0,scale:1,variant:0,rotation:0},[]);
+    try{physics.add(record,[{center:[0,1.5,0],half:[1,.25,.4]}],undefined,false);
+      physics.movement([0,0,2],[0,0,0],CHARACTER.radius,CHARACTER.height,0,0);
+      let feet:[number,number,number]=[0,0,1.5];for(let i=0;i<40;i++)feet=physics.movement(feet,[0,0,-.08],CHARACTER.radius,.72,0,0).feet;
+      expect(feet[2]).toBeLessThan(-1);expect(feet[1]).toBeCloseTo(0,5);
+      feet=[0,0,1.5];for(let i=0;i<40;i++)feet=physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,0,0).feet;
+      expect(feet[2]).toBeGreaterThan(.7);
+    }finally{physics.dispose();}
+  });
   it('allows the standing capsule through an actual opening and keeps shallow damage solid',async()=>{await initializePhysics();await initializeMeshRefinement();const source=solidSource([{type:'box',center:[0,1.25,0],half:[1.5,1.25,.11],material:'wall-wood'}]),v=new SparseVolume(source);v.edit({center:[0,1.1,0],axis:[0,0,1],radius:0,depth:0,seed:1,box:[.45,1.12,.2]});const record=recordFor('passage',{kind:'wall-wood',x:0,y:0,z:0,scale:1,variant:0,rotation:0},[]);record.volume=v.state;const physics=new SolidPhysics();try{physics.add(record,collisionBoxes(source,v.state),collisionSurfaceMeshes(meshVolume(source,v.state)),false);let feet:[number,number,number]=[0,0,1];for(let i=0;i<30;i++)feet=physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,.28,0).feet;expect(feet[2]).toBeLessThan(-.5);feet=[.8,0,1];for(let i=0;i<30;i++)feet=physics.movement(feet,[0,0,-.08],CHARACTER.radius,CHARACTER.height,.28,0).feet;expect(feet[2]).toBeGreaterThan(.3);}finally{physics.dispose();}},30000);
 });
