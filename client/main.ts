@@ -38,6 +38,7 @@ app.innerHTML=`
   <div class="play-hint">Click the landscape to explore</div><div class="reticle"></div>
   <div class="overlay" id="overlay"><div class="eyebrow">A world from a seed</div><h1 id="overlay-title">Finding the island</h1><p id="message">Connecting to the world server…</p><div class="loading-line" id="loading-line"></div><button id="retry" hidden>Retry</button></div>`;
 const get=(id:string)=>document.getElementById(id)!;
+const vitalsUI={oxygen:get('oxygen'),oxygenTime:get('oxygen-time'),bubbles:[...document.querySelectorAll<HTMLElement>('.bubble')],stamina:get('stamina'),staminaState:get('stamina-state'),root:document.querySelector<HTMLElement>('.vitals')!};
 get('network-debug').hidden=!new URLSearchParams(location.search).has('netdebug');
 const overlay=get('overlay');
 const clockNow=()=>Date.now()/1000;
@@ -126,11 +127,12 @@ async function start() {
         const player=c.character;
         if(player.respawns!==respawns){respawns=player.respawns;noteUntil=now+4500;const cause=player.lastDeathCause;get('respawn-note').textContent=`${cause==='drowning'?'Drowned':cause==='fall'?'Fatal fall':cause==='bleeding'?'Bled out':'Fatal injury'} — returned to shore`;}
         if(now>noteUntil)get('respawn-note').textContent='';
-        get('oxygen').setAttribute('aria-valuemax',player.oxygenCapacity.toFixed(1));get('oxygen').setAttribute('aria-valuenow',player.oxygen.toFixed(1));get('oxygen-time').textContent=`${Math.ceil(player.oxygen/(player.underwater?player.oxygenDrainRate:1))}s`;
-        document.querySelectorAll<HTMLElement>('.bubble').forEach((bubble,i)=>bubble.style.setProperty('--fill',String(Math.max(0,Math.min(1,player.oxygen/player.oxygenCapacity*6-i)))));
-        get('stamina').style.setProperty('--fill',String(player.stamina/100));get('stamina').setAttribute('aria-valuenow',player.stamina.toFixed(1));
-        get('stamina-state').textContent=player.exhausted?'Exhausted':player.swimming?'Swimming':'';
-        document.querySelector('.vitals')!.classList.toggle('low-oxygen',player.oxygen<player.oxygenCapacity*.25);
+        const oxygenMax=player.oxygenCapacity.toFixed(1),oxygen=player.oxygen.toFixed(1);if(vitalsUI.oxygen.getAttribute('aria-valuemax')!==oxygenMax)vitalsUI.oxygen.setAttribute('aria-valuemax',oxygenMax);if(vitalsUI.oxygen.getAttribute('aria-valuenow')!==oxygen)vitalsUI.oxygen.setAttribute('aria-valuenow',oxygen);
+        const oxygenTime=`${Math.ceil(player.oxygen/(player.underwater?player.oxygenDrainRate:1))}s`;if(vitalsUI.oxygenTime.textContent!==oxygenTime)vitalsUI.oxygenTime.textContent=oxygenTime;
+        const oxygenFill=player.oxygen/player.oxygenCapacity*6;vitalsUI.bubbles.forEach((bubble,i)=>{const fill=String(Math.max(0,Math.min(1,oxygenFill-i)));if(bubble.style.getPropertyValue('--fill')!==fill)bubble.style.setProperty('--fill',fill);});
+        const staminaFill=String(player.stamina/100),stamina=player.stamina.toFixed(1);if(vitalsUI.stamina.style.getPropertyValue('--fill')!==staminaFill)vitalsUI.stamina.style.setProperty('--fill',staminaFill);if(vitalsUI.stamina.getAttribute('aria-valuenow')!==stamina)vitalsUI.stamina.setAttribute('aria-valuenow',stamina);
+        const staminaState=player.exhausted?'Exhausted':player.swimming?'Swimming':'';if(vitalsUI.staminaState.textContent!==staminaState)vitalsUI.staminaState.textContent=staminaState;
+        const lowOxygen=player.oxygen<player.oxygenCapacity*.25;if(vitalsUI.root.classList.contains('low-oxygen')!==lowOxygen)vitalsUI.root.classList.toggle('low-oxygen',lowOxygen);
         if(c.character.ready&&!failed)overlay.classList.add('hidden');
         if(now-lastUI>300) {
           daylightUI();

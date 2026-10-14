@@ -30,13 +30,13 @@ import type {BuildScene} from '../shared/build-scene';
 import type { TerrainStream } from './streaming';
 import { FrameProfiler,GpuProfiler } from './performance';
 import {TreeImpostors,impostorMesh,impostorShader,modelBounds,type ModelBounds} from './impostors';
-import {frustumPlanes,sphereInFrustum} from './culling';
+import {frustumPlanes,sphereInFrustum,indexChunkNeighborhoods} from './culling';
 import {lodEntries,rangeFade,type LodBoundary} from './lod';
 import {qualities,type Quality,type QualitySettings} from './quality';
 
 interface Mesh { vertex: GPUBuffer; index: GPUBuffer; indexFormat:GPUIndexFormat; count: number; material: string;borrowed?:boolean;clipGroup?:GPUBindGroup }
 interface DamageDraw {terrainInstance?:GPUBuffer;record:SolidRecord;meshes:Mesh[];lods:Mesh[][];owns:boolean;prediction?:{base?:DamageDraw;regions:VolumeRegion[];signature:string;buffer:GPUBuffer}}
-interface Resident { mining?:{signature:string;buffer:GPUBuffer;group:GPUBindGroup};data: ChunkData; mesh: Mesh; water?: Mesh; instance: GPUBuffer; lastUsed: number; seam?: string; placedProps?: Prop[]; colliders?:CharacterCollider[]; surfaceVertices?: Float32Array; support?: string;renderBounds?:[number,number] }
+interface Resident { mining?:{signature:string;buffer:GPUBuffer;group:GPUBindGroup};miningRevision?:string;data: ChunkData; mesh: Mesh; water?: Mesh; instance: GPUBuffer; lastUsed: number; seam?: string; placedProps?: Prop[]; colliders?:CharacterCollider[]; surfaceVertices?: Float32Array; support?: string;renderBounds?:[number,number] }
 interface Batch { mesh: Mesh; buffer: GPUBuffer; capacity: number; instances: Float32Array; count:number; shadow:boolean;nearest:number }
 interface PropRenderInfo {tree:boolean;radius:number;centerY:number;range:number;boundaries:LodBoundary[];shadowBoundaries:LodBoundary[];meshes:Mesh[][]}
 const vertexLayout: GPUVertexBufferLayout = { arrayStride: VERTEX_FLOATS * 4, attributes: [
@@ -77,7 +77,7 @@ export class IslandRenderer {
   private impostors!:TreeImpostors;
   private impostorPipeline!:GPURenderPipeline;
   private frameLayout!:GPUBindGroupLayout;
-  private damaged=new Map<string,DamageDraw>();private treeGeometry=new Map<string,GeometryData[]>();private damageVisibility='';private damageGeometryRevision=0;
+  private damaged=new Map<string,DamageDraw>();private treeGeometry=new Map<string,GeometryData[]>();private damageVisibility='';private damageVisibilityRevision='';private damageGeometryRevision=0;
   private scenerySignature='';
   private visibleBatches:Batch[]=[];
   remotePlayers:{id:string;nickname:string;feet:[number,number,number];posture?:'stand'|'crouch'|'crawl'}[]=[];private labels=new Map<string,HTMLElement>();
@@ -97,6 +97,9 @@ export class IslandRenderer {
   private uniform!: GPUBuffer;
   private postUniform!:GPUBuffer;
   private uniformValues = new Float32Array(64);
+  private postValues = new Float32Array(4);
+  private instanceValues = new Float32Array(8);
+  private cachedDrawChunks:Resident[]=[];
   private frameGroup!: GPUBindGroup;
   private frameOnly!: GPUBindGroup;
   private materialLayout!: GPUBindGroupLayout;
@@ -545,7 +548,7 @@ export class IslandRenderer {
     this.uniformValues.set(matrices.vp, 0); this.uniformValues.set(matrices.inverse, 16); this.uniformValues.set(light, 32);
     const waterDepth=Math.max(0,(camera.character.waterLevel??camera.position[1])-camera.position[1]);
     this.uniformValues.set([camera.position[0], camera.position[1], camera.position[2], waterDepth], 48);
-    this.write(this.postUniform,new Float32Array([waterDepth,time,daylight.exposure,0]));
+    this.postValues.set([waterDepth,time,daylight.exposure,0]);this.write(this.postUniform,this.postValues);
     this.activePointLights=packLighting(this.lightingValues,daylight,camera.position,this.buildScene?[...this.buildScene.placed.query(camera.position[0],camera.position[2],128),...[...this.buildScene.edits.values()].filter(r=>r.fall&&!r.removed&&['torch','torch-wall','campfire'].includes(r.prop.kind)).map(r=>this.buildScene!.solid(r.prop,r.id))]:[],quality.pointLights,time);
     this.write(this.lightingUniform,this.lightingValues);
     this.uniformValues.set([...sun, 1], 52); this.uniformValues.set([time, this.distance, ...this.size], 56);
@@ -554,25 +557,22 @@ export class IslandRenderer {
     this.write(this.uniform, this.uniformValues);
     this.profiler.endStage('frameSetup',stage);stage=this.profiler.mark();
     const drawKeyRevision=`${this.topologyRevision}/${stream.revision}`;
-    if(drawKeyRevision!==this.drawKeyRevision) {this.drawKeyRevision=drawKeyRevision;this.cachedDrawKeys=stream.drawKeys(new Set(this.chunks.keys()));}
+    if(drawKeyRevision!==this.drawKeyRevision) {
+      this.drawKeyRevision=drawKeyRevision;
+      this.cachedDrawKeys=stream.drawKeys(new Set(this.chunks.keys()));
+      this.cachedDrawChunks=this.cachedDrawKeys.map(key=>this.chunks.get(key)!);
+    }
     const drawKeys=this.cachedDrawKeys;
-    const drawn = drawKeys.map(key => this.chunks.get(key)!);
+    const drawn = this.cachedDrawChunks;
     const gradeRevision=this.buildScene?this.buildScene.terrainRevision-this.buildScene.miningRevision:0;
     const signature=`${this.topologyRevision}/${drawKeys.join('|')}/${gradeRevision}`;
     const topologyChanged=signature!==this.topologySignature;
     this.topologySignature=signature;
+    const neighborhoods=topologyChanged?indexChunkNeighborhoods(drawn.map(chunk=>chunk.data),BASE_CHUNK):undefined;
     if(topologyChanged) {
-    for (const chunk of drawn) {
-      const d = chunk.data, extent = BASE_CHUNK * 2 ** d.level, neighbors = [d.level, d.level, d.level, d.level];
-      for (const other of drawn) {
-        const b = other.data, e = BASE_CHUNK * 2 ** b.level;
-        if (b.level <= d.level) continue;
-        const overlapX = b.x < d.x + extent && b.x + e > d.x, overlapZ = b.z < d.z + extent && b.z + e > d.z;
-        if (overlapX && b.z + e === d.z) neighbors[0] = Math.max(neighbors[0], b.level);
-        if (overlapZ && b.x === d.x + extent) neighbors[1] = Math.max(neighbors[1], b.level);
-        if (overlapX && b.z === d.z + extent) neighbors[2] = Math.max(neighbors[2], b.level);
-        if (overlapZ && b.x + e === d.x) neighbors[3] = Math.max(neighbors[3], b.level);
-      }
+    // Only the tiles whose bounds touch each edge can affect seam stitching.
+    for(let index=0;index<drawn.length;index++) {
+      const chunk=drawn[index],d=chunk.data,extent=BASE_CHUNK*2**d.level,neighbors=neighborhoods!.seamLevels[index];
       const floorSignature=this.buildScene?.gradingSignature(d.x,d.z,extent)??'';
       const signature = `${neighbors.join(':')}/${floorSignature}`;
       if (signature !== chunk.seam) {
@@ -584,13 +584,10 @@ export class IslandRenderer {
     }
     this.profiler.endStage('seams',stage);stage=this.profiler.mark();
     // Finish all seams before fitting footprints; big outcrops can span neighboring tiles.
-    if(topologyChanged)for (const chunk of drawn) {
+    if(topologyChanged)for(let index=0;index<drawn.length;index++) {
+      const chunk=drawn[index];
       if (!chunk.data.props.length) continue;
-      const d = chunk.data, extent = BASE_CHUNK * 2 ** d.level;
-      const nearby = drawn.filter(other => {
-        const b = other.data, e = BASE_CHUNK * 2 ** b.level;
-        return b.x < d.x + extent + 32 && b.x + e > d.x - 32 && b.z < d.z + extent + 32 && b.z + e > d.z - 32;
-      });
+      const d=chunk.data,nearby=neighborhoods!.supportIndices[index].map(i=>drawn[i]);
       const signature = nearby.map(other => `${other.data.key}/${other.seam}`).join('|');
       if (signature === chunk.support) continue;
       chunk.support = signature;
@@ -612,15 +609,18 @@ export class IslandRenderer {
     }
     this.profiler.endStage('placement',stage);stage=this.profiler.mark();
     const visible: Resident[] = [], shadowChunks: Resident[] = [];
-    const positionChanged=topologyChanged||camera.position.some((v,i)=>v!==this.instancePosition[i]);
-    this.instancePosition=[...camera.position];
-    for (const key of drawKeys) {
-      const chunk = this.chunks.get(key)!; chunk.lastUsed = this.frameNumber;
+    const positionChanged=topologyChanged||camera.position[0]!==this.instancePosition[0]||camera.position[1]!==this.instancePosition[1]||camera.position[2]!==this.instancePosition[2];
+    this.instancePosition[0]=camera.position[0];this.instancePosition[1]=camera.position[1];this.instancePosition[2]=camera.position[2];
+    for (const chunk of drawn) {
+      chunk.lastUsed = this.frameNumber;
       const e = BASE_CHUNK * 2 ** chunk.data.level, cx = chunk.data.x + e / 2, cz = chunk.data.z + e / 2;
       const [min,max]=chunk.renderBounds??[chunk.data.minHeight,chunk.data.maxHeight];
       const cy = (min + max) / 2;
       const radius = Math.hypot(e / 2, e / 2, (max - min) / 2);
-      if(positionChanged)this.write(chunk.instance, new Float32Array([chunk.data.x - camera.position[0], -camera.position[1], chunk.data.z - camera.position[2], 1, 0, 0, 0, 1]));
+      if(positionChanged) {
+        this.instanceValues.set([chunk.data.x-camera.position[0],-camera.position[1],chunk.data.z-camera.position[2],1,0,0,0,1]);
+        this.write(chunk.instance,this.instanceValues);
+      }
       if (Math.hypot(cx-camera.position[0],cy-camera.position[1],cz-camera.position[2])<=this.distance+radius&&sphereInFrustum(viewPlanes,cx-camera.position[0],cy-camera.position[1],cz-camera.position[2],radius)) visible.push(chunk);
       if (sphereInFrustum(lightPlanes,cx-camera.position[0],cy-camera.position[1],cz-camera.position[2],radius)) shadowChunks.push(chunk);
     }
@@ -628,7 +628,13 @@ export class IslandRenderer {
     visible.sort((a,b)=>Math.hypot(a.data.x-camera.position[0],a.data.z-camera.position[2])-Math.hypot(b.data.x-camera.position[0],b.data.z-camera.position[2]));
     this.profiler.endStage('terrainCull',stage);stage=this.profiler.mark();
     const origin=[Math.floor(camera.position[0]/1024)*1024,Math.floor(camera.position[2]/1024)*1024];
-    const damageVisibility=[...this.buildScene?.edits.values()??[]].filter(r=>r.removed).map(r=>r.id).sort().join('|')+'/'+[...this.damaged.keys()].sort().join('|');if(damageVisibility!==this.damageVisibility){this.damageVisibility=damageVisibility;this.farChunks=new WeakMap();this.farSignature='';}
+    const damageRevision=`${this.buildScene?.revision??0}/${this.damageGeometryRevision}`;
+    if(damageRevision!==this.damageVisibilityRevision) {
+      this.damageVisibilityRevision=damageRevision;
+      const damageVisibility=[...this.buildScene?.edits.values()??[]].filter(r=>r.removed).map(r=>r.id).sort().join('|')+'/'+[...this.damaged.keys()].sort().join('|');
+      if(damageVisibility!==this.damageVisibility){this.damageVisibility=damageVisibility;this.farChunks=new WeakMap();this.farSignature='';}
+    }
+    const damageVisibility=this.damageVisibility;
     const farSignature=`${signature}/${origin.join(',')}/${damageVisibility}`;
     if(farSignature!==this.farSignature) {
       this.farSignature=farSignature;this.farOrigin=origin;
@@ -672,7 +678,8 @@ export class IslandRenderer {
       for(const batch of this.farBatches.values())if(batch.count)this.write(batch.buffer,batch.instances.subarray(0,batch.count*11));
     }
     const handoff=quality.treeLod[2];
-    this.write(this.farUniform,new Float32Array([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]));
+    this.instanceValues.set([this.farOrigin[0]-camera.position[0],-camera.position[1],this.farOrigin[1]-camera.position[2],quality.trees,handoff.distance-handoff.width/2,handoff.distance+handoff.width/2,0,0]);
+    this.write(this.farUniform,this.instanceValues);
     this.profiler.endStage('distantScenery',stage);stage=this.profiler.mark();
     const scenerySignature=`${signature}/${camera.position.join(',')}/${camera.yaw}/${camera.pitch}/${this.quality}/${sun.join(',')}/${this.size.join(',')}/${this.frontToBack}/${this.buildScene?.revision??0}/${this.damageGeometryRevision}/${this.perception.signature}/${this.remotePlayers.map(p=>p.id+':'+p.feet.join(',')+':'+(p.posture??'stand')).join(';')}`;
     const sceneryChanged=scenerySignature!==this.scenerySignature;
@@ -733,13 +740,17 @@ export class IslandRenderer {
     this.profiler.endStage('instanceUpload',stage);stage=this.profiler.mark();
     const encoder = this.device.createCommandEncoder();this.gpuProfiler?.begin(this.frameNumber);
     const mines=[...this.damaged.values()].filter(d=>d.terrainInstance&&!d.record.removed);
-    for(const d of mines){const p=d.record.prop;this.write(d.terrainInstance!,new Float32Array([p.x-camera.position[0],p.y-camera.position[1],p.z-camera.position[2],1,0,0,0,1]));}
-    for(const chunk of new Set([...visible,...shadowChunks])){
-      const key=String(this.damageGeometryRevision);if(chunk.mining?.signature===key)continue;
+    for(const d of mines){const p=d.record.prop;this.instanceValues.set([p.x-camera.position[0],p.y-camera.position[1],p.z-camera.position[2],1,0,0,0,1]);this.write(d.terrainInstance!,this.instanceValues);}
+    const updateMining=(chunk:Resident)=>{
+      const key=String(this.damageGeometryRevision);if(chunk.miningRevision===key||chunk.mining?.signature===key){chunk.miningRevision=key;return;}
       const e=BASE_CHUNK*2**chunk.data.level,regions=mines.filter(d=>{const p=d.record.prop;return p.x+1>=chunk.data.x&&p.x<=chunk.data.x+e&&p.z+1>=chunk.data.z&&p.z<=chunk.data.z+e;});
       chunk.mining?.buffer.destroy();chunk.mining=undefined;
       if(regions.length){const boxes=regions.flatMap(d=>{const p=d.record.prop,local=d.prediction?.regions;return local?.length?local.map(r=>[[p.x+r[0][0],p.y+r[0][1],p.z+r[0][2]],[p.x+r[1][0],p.y+r[1][1],p.z+r[1][2]]] as const):[[[p.x,p.y,p.z],[p.x+1,p.y+1,p.z+1]] as const];}).filter(([a,b])=>b[0]>=chunk.data.x&&a[0]<=chunk.data.x+e&&b[2]>=chunk.data.z&&a[2]<=chunk.data.z+e);const values=new Float32Array(boxes.length*8);boxes.forEach((box,i)=>{values.set([...box[0],i===0?boxes.length:0,...box[1],0],i*8);});if(boxes.length){const buffer=this.upload(values,GPUBufferUsage.STORAGE,'Mined terrain cells');chunk.mining={signature:key,buffer,group:this.device.createBindGroup({layout:this.editLayout,entries:[{binding:0,resource:{buffer}}]})};}}
-    }
+      chunk.miningRevision=key;
+    };
+    const miningChunks=new Set(visible);
+    for(const chunk of shadowChunks)miningChunks.add(chunk);
+    for(const chunk of miningChunks)updateMining(chunk);
     const draw = (pass: GPURenderPassEncoder, mesh: Mesh, instances: GPUBuffer, count = 1,mode?:'shade'|'equal'|'depth'|'shadow') => {
       const material = this.materials.get(mesh.material); if (!material) throw new Error(`Unknown model material ${mesh.material}`);
       if(mesh.clipGroup&&mode){pass.setPipeline(this.editPipelines[mode]);pass.setBindGroup(2,mesh.clipGroup);}

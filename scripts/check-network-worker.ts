@@ -53,7 +53,7 @@ try{
  const firstWelcome=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.type==='welcome').message);
  if(countItem(firstWelcome.inventory,'wood')!==10)throw new Error('Worker welcome missed its private inventory');
  if(firstWelcome.selectedSlot!==8)throw new Error(`Saved hotbar selection was not restored (${firstWelcome.selectedSlot})`);
- if(!firstWelcome.state.health||Object.keys(firstWelcome.state.health).length!==6||firstWelcome.state.health.leftLeg.hp!==20||firstWelcome.state.health.leftLeg.bleeding!=='heavy')throw new Error('Worker welcome missed the saved six-part injury state');
+ if(!firstWelcome.state.health||Object.keys(firstWelcome.state.health).length!==6||firstWelcome.state.health.leftLeg.hp!==20||firstWelcome.state.health.leftLeg.bleeding!=='heavy')throw new Error('Worker welcome missed the saved six-part injury state: '+JSON.stringify(firstWelcome.state.health));
  if(!firstWelcome.state.crawling)throw new Error('The badly injured leg did not begin in a crawl without crutches');
  await page.evaluate(()=>((window as any).__worker).postMessage({type:'command',rpc:20,kind:'craft',request:{requestId:'worker-craft-torch-0001',recipeId:'torch'}}));
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===20));

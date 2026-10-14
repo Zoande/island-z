@@ -9,6 +9,11 @@ describe('body health foundations',()=>{
     const body=healthyBody();expect(BODY_PARTS).toHaveLength(6);expect(BODY_PARTS.every(part=>body[part].hp===100&&body[part].bleeding==='none')).toBe(true);expect(validBodyHealth(body)).toBe(true);
     expect(validBodyHealth({...body,tail:body.head})).toBe(false);expect(validBodyHealth({...body,head:{hp:101,bleeding:'none'}})).toBe(false);
   });
+  it('keeps a stable healthy reference and advances injuries without mutating snapshots',()=>{
+    const healthy=healthyBody();expect(advanceHealth(healthy,1/120)).toBe(healthy);
+    const hurt=applyDamage(healthy,{part:'leftArm',amount:25,bleeding:'moderate'}),before=structuredClone(hurt),next=advanceHealth(hurt,1/120);
+    expect(next).not.toBe(hurt);expect(hurt).toEqual(before);expect(next.leftArm).not.toBe(hurt.leftArm);expect(next.head).toBe(hurt.head);
+  });
   it('applies damage immutably, caps HP and bleeding, then heals after injury delay',()=>{
     const start=healthyBody(),hurt=applyDamage(start,{part:'leftArm',amount:140,bleeding:'moderate'});
     expect(start.leftArm.hp).toBe(100);expect(hurt.leftArm).toMatchObject({hp:0,bleeding:'moderate'});expect(hurt.leftArm.bleedingTime).toBeGreaterThan(0);

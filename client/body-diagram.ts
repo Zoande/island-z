@@ -27,6 +27,7 @@ const restrictions = (part: BodyPart, health: BodyHealth, effects: ReturnType<ty
 export interface BodyDiagramOptions {
   className?: string;
   interactive?: boolean;
+  refreshTooltip?: boolean;
   onPartActivate?: (part: BodyPart) => void;
   tooltipManager?: TooltipManager;
 }
@@ -44,6 +45,7 @@ export function createBodyDiagram(options: BodyDiagramOptions = {}): BodyDiagram
   const doc = document;
   const manager = options.tooltipManager ?? getTooltipManager(doc);
   const instance = ++diagramId;
+  const regions = new Map<BodyPart,{group:SVGGElement;hp:SVGTextElement;badge:SVGTextElement}>();
   const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', `body-diagram inv-body-svg${options.className ? ` ${options.className}` : ''}`);
   svg.setAttribute('viewBox', '0 0 180 300');
@@ -72,6 +74,7 @@ export function createBodyDiagram(options: BodyDiagramOptions = {}): BodyDiagram
     badge.setAttribute('x', String(badgeCoords[part][0])); badge.setAttribute('y', String(badgeCoords[part][1]));
     group.append(hp, badge);
     svg.append(group);
+    regions.set(part,{group,hp,badge});
     manager.bind(group as unknown as HTMLElement, () => {
       const health = latest;
       if (!health) return null;
@@ -105,13 +108,13 @@ export function createBodyDiagram(options: BodyDiagramOptions = {}): BodyDiagram
   const update = (health: BodyHealth, hands:{right?:string;left?:string}={}) => {
     latest = health;latestHands=hands;
     for (const part of BODY_PARTS) {
-      const region = health[part], group = svg.querySelector<SVGGElement>(`[data-part="${part}"]`)!;
+      const region = health[part], {group,hp:hpNode,badge:badgeNode} = regions.get(part)!;
       group.classList.toggle('injured', region.hp < 70);
       const activeBleeding=region.bleeding==='heavy'||region.bleeding!=='none'&&(region.bleedingTime??0)>0;
       group.classList.toggle('bleeding', activeBleeding);
       group.classList.toggle('critical', region.hp <= 30);
-      const hpText=String(Math.round(region.hp)),hpNode=group.querySelector<SVGTextElement>('.body-hp')!;if(hpNode.textContent!==hpText)hpNode.textContent=hpText;
-      const badgeText=!activeBleeding ? '' : region.bleeding === 'light' ? '!' : region.bleeding === 'moderate' ? '!!' : '!!!',badgeNode=group.querySelector<SVGTextElement>('.body-bleed-badge')!;if(badgeNode.textContent!==badgeText)badgeNode.textContent=badgeText;
+      const hpText=String(Math.round(region.hp));if(hpNode.textContent!==hpText)hpNode.textContent=hpText;
+      const badgeText=!activeBleeding ? '' : region.bleeding === 'light' ? '!' : region.bleeding === 'moderate' ? '!!' : '!!!';if(badgeNode.textContent!==badgeText)badgeNode.textContent=badgeText;
       let label = `${partNames[part]}: ${Math.round(region.hp)} of 100 health. ${bleedLabel[region.bleeding]}.`;
       if (region.bleeding === 'moderate' && region.bleedingTime === 0) label += ' Bleeding has stopped.';
       else if (region.bleeding === 'heavy' && region.bleedingTime === 0) label += ' Heavy bleeding will not stop naturally.';
@@ -121,7 +124,7 @@ export function createBodyDiagram(options: BodyDiagramOptions = {}): BodyDiagram
       if (region.healingCap !== undefined) label += ` Healing limited to ${Math.round(region.healingCap)} HP.`;
       if(group.getAttribute('aria-label')!==label)group.setAttribute('aria-label', label);
     }
-    manager.refresh();
+    if(options.refreshTooltip!==false)manager.refresh();
   };
   const dispose = () => { for (const group of svg.querySelectorAll<SVGGElement>('.body-region')) manager.bind(group as unknown as HTMLElement, () => null)(); };
   return {element: svg as unknown as HTMLElement, update, dispose};
@@ -138,25 +141,29 @@ export function createBodyHUD(container?: HTMLElement): BodyHUD {
   root.className = 'body-health-hud';
   root.setAttribute('aria-label', 'Current body health');
   const title = document.createElement('span'); title.className = 'body-hud-title'; title.textContent = 'BODY';
-  const diagram = createBodyDiagram({className:'body-hud-diagram'});
+  const manager=getTooltipManager();
+  const diagram = createBodyDiagram({className:'body-hud-diagram',refreshTooltip:false});
   const list = document.createElement('div'); list.className = 'body-hud-regions';
+  const hudRegions = new Map<BodyPart,{item:HTMLElement;value:HTMLElement}>();
   for (const part of BODY_PARTS) {
     const item = document.createElement('span'); item.className = 'body-hud-region'; item.dataset.part = part;
     item.setAttribute('aria-label', partNames[part]);
     const abbrev = document.createElement('b'); abbrev.textContent = ({head:'HD',chest:'CH',leftArm:'LA',rightArm:'RA',leftLeg:'LL',rightLeg:'RL'} as const)[part];
     const value = document.createElement('span'); value.className = 'body-hud-hp'; value.textContent = '100';
     item.append(abbrev, value); list.append(item);
+    hudRegions.set(part,{item,value});
   }
   root.append(title, diagram.element, list);
   container?.append(root);
   const update = (health: BodyHealth, hands:{right?:string;left?:string}={}) => {
     diagram.update(health,hands);
     for (const part of BODY_PARTS) {
-      const item = list.querySelector<HTMLElement>(`[data-part="${part}"]`)!;
-      const region = health[part],value=item.querySelector<HTMLElement>('.body-hud-hp')!,hp=String(Math.round(region.hp));if(value.textContent!==hp)value.textContent=hp;
+      const {item,value}=hudRegions.get(part)!;
+      const region = health[part],hp=String(Math.round(region.hp));if(value.textContent!==hp)value.textContent=hp;
       item.classList.toggle('injured', region.hp < 70); item.classList.toggle('bleeding', region.bleeding==='heavy'||region.bleeding!=='none'&&(region.bleedingTime??0)>0);
       const label=`${partNames[part]} ${Math.round(region.hp)} health, ${bleedLabel[region.bleeding]}`;if(item.getAttribute('aria-label')!==label)item.setAttribute('aria-label',label);
     }
+    manager.refresh();
   };
   const dispose = () => { diagram.dispose(); root.remove(); };
   return {element: root, update, dispose};

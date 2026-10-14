@@ -30,6 +30,8 @@ export interface HealthEffects {
 }
 const BLEED_RATE: Record<Bleeding, number> = {none:0,light:.08,moderate:.28,heavy:.72};
 const BLEED_DURATION: Record<Bleeding, number> = {none:0,light:20,moderate:120,heavy:0};
+const TIMED_HEALTH_FIELDS=['injuryTime','bandagedTime','healingCapTime'] as const;
+const HEALTH_FIELDS=['hp','bleeding','bleedingTime','injuryTime','bandagedTime','healingCap','healingCapTime'] as const;
 export const cloneBodyHealth = (body:BodyHealth):BodyHealth => Object.fromEntries(BODY_PARTS.map(part=>[part,{...body[part]}])) as BodyHealth;
 const clone=cloneBodyHealth;
 export function healthyBody():BodyHealth {
@@ -50,6 +52,22 @@ export function validBodyHealth(value:unknown):value is BodyHealth {
   }
   return true;
 }
+/** Checks the canonical no-injury shape without building validation tables. */
+function isUntouchedHealthyBody(value:unknown):value is BodyHealth {
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const body=value as Record<string,unknown>,bodyKeys=Object.keys(body);
+  if(bodyKeys.length!==BODY_PARTS.length)return false;
+  for(const part of BODY_PARTS) {
+    if(!Object.hasOwn(body,part))return false;
+    const value=body[part];
+    if(!value||typeof value!=='object'||Array.isArray(value))return false;
+    const region=value as PartHealth,keys=Object.keys(region);
+    if(region.hp!==100||region.bleeding!=='none'||keys.length<2||keys.length>7)return false;
+    for(const key of keys)if(key!=='hp'&&key!=='bleeding'&&key!=='bleedingTime'&&key!=='injuryTime'&&key!=='bandagedTime'&&key!=='healingCap'&&key!=='healingCapTime')return false;
+    if(region.bleedingTime!==undefined||region.injuryTime!==undefined||region.bandagedTime!==undefined||region.healingCap!==undefined||region.healingCapTime!==undefined)return false;
+  }
+  return true;
+}
 export function applyDamage(body:BodyHealth,damage:Damage):BodyHealth {
   if(!validBodyHealth(body)||!BODY_PARTS.includes(damage.part)||!Number.isFinite(damage.amount)||damage.amount<0)return clone(body);
   const result=clone(body),part=result[damage.part],amount=Math.min(100,damage.amount);
@@ -63,31 +81,36 @@ export function applyDamage(body:BodyHealth,damage:Damage):BodyHealth {
   return result;
 }
 export function advanceHealth(body:BodyHealth,dt:number,options:{allowNaturalHealing?:boolean}={}):BodyHealth {
+  if(Number.isFinite(dt)&&dt>0&&isUntouchedHealthyBody(body))return body;
   if(!validBodyHealth(body))return healthyBody();
   if(!Number.isFinite(dt)||dt<=0)return clone(body);
-  const result=clone(body),seconds=Math.min(dt,3600);
+  let result:BodyHealth|undefined;const seconds=Math.min(dt,3600),allowNaturalHealing=options.allowNaturalHealing!==false;
   for(const part of BODY_PARTS) {
-    const p=result[part];let remaining=seconds;
+    const original=body[part];
+    const naturallyHealing=allowNaturalHealing&&(original.injuryTime??0)<=1e-9&&original.hp<(original.healingCap??100);
+    if(original.injuryTime===undefined&&original.bandagedTime===undefined&&original.healingCapTime===undefined&&original.bleedingTime===undefined&&original.bleeding!=='heavy'&&!naturallyHealing)continue;
+    const p={...original};let remaining=seconds;
     while(remaining>1e-9) {
       let step=remaining;
-      for(const timer of ['injuryTime','bandagedTime','healingCapTime'] as const) {
+      for(const timer of TIMED_HEALTH_FIELDS) {
         const t=p[timer];if(t!==undefined&&t>1e-9)step=Math.min(step,t);
       }
       if(p.bleeding!=='heavy'&&(p.bleedingTime??0)>1e-9)step=Math.min(step,p.bleedingTime!);
       if(p.bleeding==='heavy'||(p.bleedingTime??0)>1e-9) {
         p.hp=Math.max(0,p.hp-BLEED_RATE[p.bleeding]*step);
-      } else if(options.allowNaturalHealing!==false&&(p.injuryTime??0)<=1e-9&&p.hp<100) {
+      } else if(allowNaturalHealing&&(p.injuryTime??0)<=1e-9&&p.hp<100) {
         const rate=(p.bandagedTime??0)>1e-9?1.2:.22,cap=p.healingCap??100;
         if(p.hp<cap)p.hp=Math.min(cap,p.hp+rate*step);
       }
-      for(const timer of ['injuryTime','bandagedTime','healingCapTime'] as const) {
+      for(const timer of TIMED_HEALTH_FIELDS) {
         if(p[timer]!==undefined){p[timer]=Math.max(0,p[timer]!-step);if(p[timer]===0){delete p[timer];if(timer==='healingCapTime')delete p.healingCap;}}
       }
       if(p.bleeding!=='heavy'&&p.bleedingTime!==undefined){p.bleedingTime=Math.max(0,p.bleedingTime-step);if(p.bleedingTime===0){if(p.bleeding==='light'){p.bleeding='none';delete p.bleedingTime;}else if(p.bleeding==='moderate')p.healingCap=70;}}
       remaining-=step;
     }
+    if(HEALTH_FIELDS.some(field=>p[field]!==original[field])){result??={...body};result[part]=p;}
   }
-  return result;
+  return result??body;
 }
 export function applyBandage(body:BodyHealth,part:BodyPart):BodyHealth {
   if(!validBodyHealth(body)||!BODY_PARTS.includes(part))return clone(body);

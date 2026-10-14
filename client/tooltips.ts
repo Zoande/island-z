@@ -59,13 +59,14 @@ export class TooltipManager {
     const normalized = this.normalize(provided);
     if (!normalized) { if (this.activeAnchor === anchor) this.hide(); return; }
     this.doc.defaultView?.clearTimeout(this.hideTimer);
-    if (this.activeAnchor && this.activeAnchor !== anchor) this.detachDescription(this.activeAnchor);
+    const wasVisible = !this.tooltip.hidden, anchorChanged = this.activeAnchor !== anchor;
+    if (this.activeAnchor && anchorChanged) this.detachDescription(this.activeAnchor);
     this.activeAnchor = anchor;
     const prior = (anchor.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
     if (!prior.includes(this.tooltip.id)) anchor.setAttribute('aria-describedby', [...prior, this.tooltip.id].join(' '));
-    this.render(normalized);
+    const contentChanged = this.render(normalized);
     this.tooltip.hidden = false;
-    this.reposition();
+    if (!wasVisible || anchorChanged || contentChanged) this.reposition();
   }
 
   /** Refreshes live health/item content without changing the focused or hovered anchor. */
@@ -111,9 +112,9 @@ export class TooltipManager {
     return title || lines.length ? {title, lines} : null;
   }
 
-  private render(value: TooltipContent): void {
+  private render(value: TooltipContent): boolean {
     const signature = JSON.stringify(value);
-    if (signature === this.contentSignature) return;
+    if (signature === this.contentSignature) return false;
     this.contentSignature = signature;
     this.content.replaceChildren();
     if (value.title) {
@@ -128,6 +129,7 @@ export class TooltipManager {
       row.textContent = line;
       this.content.append(row);
     }
+    return true;
   }
 
   private reposition(): void {
