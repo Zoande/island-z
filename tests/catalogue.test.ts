@@ -9,7 +9,8 @@ import {doorChange,validDoorRequest} from '../shared/door-interaction';
 import {catalogueChoices,hotbarSlots,objectRegistry,objectDefinition,buildProp,validBuildObject,type BuildObject,type BuildRequest,type DoorRequest} from '../shared/object-registry';
 import {CHARACTER,Character,idleInput,characterInput} from '../shared/character';
 import {loadGLB} from '../client/glb';
-import {mergeGeometry,slabGeometry} from '../client/catalogue-geometry';
+import {mergeGeometry,slabGeometry,craftingDeskGeometry} from '../client/catalogue-geometry';
+import {boxColliders} from '../shared/build-parts';
 import {wallGeometry} from '../client/wall-geometry';
 import {wallContains} from '../shared/wall-collision';
 import type {WorldGenerator} from '../shared/world';
@@ -25,6 +26,20 @@ function aim(definitionId:string,target:Point3=[0,0,0],feet:Point3=[0,0,4]):Buil
 describe('catalogue foundations',()=>{
   it('places tilted floors identically after translating the terrain away from the origin',()=>{const results=[0,240].map(offset=>{const height=(x:number)=>.1*(x-offset),s=flat(height),r={...aim('floor-wood',[offset,0,offset],[offset,0,offset+4]),tilt:.08},p=solvePlacement(s,r);expect(p.valid,p.reason).toBe(true);return p.object;});expect(results[1].position[1]).toBeCloseTo(results[0].position[1],6);expect(results[1].normal).toEqual(results[0].normal);});
   it('groups all definitions, cycles deterministically, and preserves an empty ninth slot',()=>{expect(hotbarSlots).toHaveLength(9);expect(hotbarSlots[8]).toBeNull();const choices=hotbarSlots.flatMap((_,i)=>catalogueChoices(i));for(const d of objectRegistry.values())expect(choices.filter(c=>c.definitionId===d.id)).toHaveLength(d.variants.length);expect(catalogueChoices(2).map(c=>c.definitionId)).toEqual(['wall-wood','wall-stone','wall-log','wall-brick']);});
+  it('registers a whole-destroyed crafting desk with rendered geometry inside its collision bounds',()=>{
+    const d=objectDefinition('crafting-desk'),p=buildProp(obj('desk','crafting-desk'));
+    expect(p.kind).toBe('crafting-desk');expect(d.family).toBe('furniture');expect(d.icon).toBe('table');expect(d.asset).toBeUndefined();expect(d.destruction?.mode).toBe('whole');expect(hotbarSlots[6]).toContain('crafting-desk');
+    const colliders=boxColliders(p)!;expect(colliders).toHaveLength(d.boxes!.length);
+    const bounds=[0,1,2].map(axis=>[Math.min(...d.boxes!.map(b=>b.center[axis]-b.size[axis]/2)),Math.max(...d.boxes!.map(b=>b.center[axis]+b.size[axis]/2))]),geometry=craftingDeskGeometry();
+    expect(geometry.map(g=>g.material).sort()).toEqual(['iron','wall-wood']);
+    for(const g of geometry){
+      expect(g.vertices.every(Number.isFinite)).toBe(true);expect(g.indices.every(i=>i<g.vertices.length/16)).toBe(true);
+      for(let i=0;i<g.vertices.length;i+=16)for(let axis=0;axis<3;axis++){
+        expect(g.vertices[i+axis]).toBeGreaterThanOrEqual(bounds[axis][0]-.001);
+        expect(g.vertices[i+axis]).toBeLessThanOrEqual(bounds[axis][1]+.001);
+      }
+    }
+  });
   it('loads all Blender assets using finite static geometry and centrally shared materials',async()=>{vi.stubGlobal('fetch',async(url:string)=>new Response(readFileSync('public'+url)));try{const materials=new Set(['wall-wood','wall-stone','oak-bark','linen','iron','ember']);for(const d of objectRegistry.values())if(d.asset){for(const suffix of d.wall?['','-door','-window']:['']){const parts=mergeGeometry(await loadGLB(`/models/${d.id}${suffix}-0-lod0.glb`));expect(parts.length).toBeLessThanOrEqual(3);for(const p of parts){expect(materials.has(p.material)).toBe(true);expect(p.vertices.every(Number.isFinite)).toBe(true);expect(p.indices.every(i=>i<p.vertices.length/16)).toBe(true);}}}}finally{vi.unstubAllGlobals();}},15000);
   it('cuts actual openings into every procedural wall material',()=>{for(const id of ['wall-wood','wall-stone','wall-brick'])for(const opening of ['door','window']as const){const m=wallGeometry(id,opening);for(let i=0;i<m.vertices.length;i+=16){const x=m.vertices[i],y=m.vertices[i+1];expect(Math.abs(x)<(opening==='door'?.58:.65)-.001&&y>(opening==='door'?0:1.05)+.001&&y<(opening==='door'?2.32:2.1)-.001).toBe(false);}}});
   it('flattens modest uneven ground without cumulative excavation and undoes the stamp on removal',()=>{const s=flat(x=>x*.02),p=solvePlacement(s,aim('floor-wood'));expect(p.valid,p.reason).toBe(true);s.add(p.object);expect(s.terrain(0,0).height).toBeLessThan(-.08);for(let x=-5;x<=5;x+=.25)expect(x*.02-s.grade(x,0,x*.02)).toBeLessThanOrEqual(.40001);const before=s.grade(2,0,.04);s.add({...p.object,id:'duplicate-floor'});expect(s.grade(2,0,.04)).toBe(before);s.remove(p.object.id);s.remove('duplicate-floor');expect(s.terrain(0,0).height).toBe(0);});

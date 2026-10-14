@@ -37,13 +37,13 @@ export class DestructionStore {
 
   private measure(stage:string,start:number){this.timings.push({stage,milliseconds:performance.now()-start});if(this.timings.length>300)this.timings.shift();}
   snapshot(keys:string[]){const wanted=new Set(keys),scene=this.builds.scene;const result={revision:this.revision,solids:[...scene.edits.values()].filter(r=>solidCells(r).some(k=>wanted.has(k))),leveling:[...scene.leveling.values()].filter(o=>wanted.has(buildCell(o.position[0],o.position[2]))),openings:[...scene.openings].filter(([id])=>{const r=scene.placed.get(id);return r&&wanted.has(buildCell(r.prop.x,r.prop.z));}).map(([id,kind])=>({id,kind})),removedBuilds:[]};this.pruneResident();return result;}
-  action(value:unknown):Promise<ActionResult>{const key=(value as any)?.targetId??'invalid',previous=this.lanes.get(key)??Promise.resolve();const task=previous.catch(()=>{}).then(async()=>{const start=performance.now();try{return await this.perform(value);}finally{this.measure('acknowledgement',start);}});this.lanes.set(key,task);void task.finally(()=>{if(this.lanes.get(key)===task)this.lanes.delete(key);}).catch(()=>{});return task;}
-  place(value:unknown):Promise<import('../shared/object-registry').BuildResult>{const task=this.queue.then(async()=>{
+  action(value:unknown,inventoryFor?: (record:SolidRecord,point:Point3)=>import('./journal').WorldCommit['inventory']):Promise<ActionResult>{const key=(value as any)?.targetId??'invalid',previous=this.lanes.get(key)??Promise.resolve();const task=previous.catch(()=>{}).then(async()=>{const start=performance.now();try{return await this.perform(value,inventoryFor);}finally{this.measure('acknowledgement',start);}});this.lanes.set(key,task);void task.finally(()=>{if(this.lanes.get(key)===task)this.lanes.delete(key);}).catch(()=>{});return task;}
+  place(value:unknown,inventory?:import('./journal').WorldCommit['inventory']):Promise<import('../shared/object-registry').BuildResult>{const task=this.queue.then(async()=>{
     const input=value as any;if(Array.isArray(input?.eye))await this.hydrateNear(input.eye[0],input.eye[2]);
     await this.prepareCollisions([...this.builds.scene.edits.values()].filter(r=>{const p=r.pose?.position??[r.prop.x,r.prop.y,r.prop.z];return !r.removed&&Math.hypot(p[0]-(input.eye?.[0]??0),p[2]-(input.eye?.[2]??0))<40;}));
     const prepared=this.builds.prepare(value),result=prepared.result;if(!result.ok||!prepared.fresh)return result;
     const patch=this.placementPatch(result.object);patch.objects=[result.object];await this.cookCollisions(patch.solids);
-    try{await this.persistence.append({kind:'build',object:result.object,patch,requestId:input.requestId,fingerprint:prepared.fingerprint,result});}catch{return {ok:false,code:'save',error:'The server could not save this placement'}as const;}
+    try{await this.persistence.append({kind:'build',object:result.object,patch,inventory,requestId:input.requestId,fingerprint:prepared.fingerprint,result});}catch{return {ok:false,code:'save',error:'The server could not save this placement'}as const;}
     await this.activate(()=>{this.builds.accept(result.object);this.builds.remember(input.requestId,prepared.fingerprint!,result);this.placementEpoch++;this.apply(patch);});return result;
   });this.queue=task.then(()=>{},()=>{});return task;}
   integratePlacement(object:BuildObject):Promise<void>{const task=this.queue.then(async()=>{const patch=this.placementPatch(object);if(!patch.solids.length)return;await this.persistence.append({kind:'edit',patch});await this.activate(()=>this.apply(patch));});this.queue=task.then(()=>{},()=>{});return task;}
@@ -54,7 +54,7 @@ export class DestructionStore {
     const v=new SparseVolume(old.source,old.volume);if(!v.edit(openingBrush(old,kind as 'door'|'window')))return patch;
     patch.solids.push({...old,volume:v.state,opening:kind as 'door'|'window',revision:old.revision+1});patch.openings.push({id:parent.id,kind:kind as 'door'|'window'});return patch;
   }
-  private async perform(value:unknown):Promise<ActionResult>{
+  private async perform(value:unknown,inventoryFor?:(record:SolidRecord,point:Point3)=>import('./journal').WorldCommit['inventory']):Promise<ActionResult>{
     const fail=(code:string,error:string):ActionResult=>({ok:false,code,error});if(!validAction(value))return fail('request','Invalid destruction request');const a=value as WorldAction,placementAtStart=this.placementEpoch;
     if(a.worldKey!==this.builds.worldKey)return fail('world','World changed · refresh the game');const fingerprint=createHash('sha256').update(JSON.stringify(a)).digest('hex'),receipt=this.receipts.get(a.requestId);if(receipt)return receipt.fingerprint===fingerprint?{ok:true,patch:receipt.patch,requestId:a.requestId}:fail('request-id','Action ID was reused');
     const now=a.actionTime??Date.now();if(this.antiCheatEnabled&&now-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
@@ -92,7 +92,8 @@ export class DestructionStore {
       const current=scene.edits.get(solid.id);if((current?.revision??0)!==(old?.revision??0)||this.antiCheatEnabled&&a.action==='repair'&&placementAtStart!==this.placementEpoch)return fail('revision','Target or its support changed; aim again');
       const commitNow=a.actionTime??Date.now();if(this.antiCheatEnabled&&commitNow-(this.cadence.get(a.sessionId)??-Infinity)<DESTRUCTION.intervalMs-15)return fail('cadence','Wait for the next stroke');
       patch.revision=this.revision+1;const saved:SavedEdit={schema:1,worldKey:this.builds.worldKey,requestId:a.requestId,fingerprint,patch,analysis:a.action!=='repair'&&record.prop.kind!=='terrain'?a:undefined};
-      try{await this.persistence.append({kind:'edit',patch,requestId:saved.requestId,fingerprint:saved.fingerprint,analysis:saved.analysis,result:{ok:true,patch,requestId:a.requestId}});}catch{return fail('save','The server could not save this change');}
+      const inventory=a.action==='repair'?undefined:inventoryFor?.(record,hit.point);
+      try{await this.persistence.append({kind:'edit',patch,inventory,requestId:saved.requestId,fingerprint:saved.fingerprint,analysis:saved.analysis,result:{ok:true,patch,requestId:a.requestId}});}catch{return fail('save','The server could not save this change');}
       this.cadence.set(a.sessionId,commitNow);for(const [id,time]of this.cadence)if(commitNow-time>60000)this.cadence.delete(id);this.remember(saved);await this.activate(()=>this.apply(patch,true));
       if(a.action!=='repair'&&record.prop.kind!=='terrain'){this.supportRequests.set(a.targetId,a);setImmediate(()=>this.startSupport());}this.records++;return {ok:true,patch,requestId:a.requestId}as ActionResult;
     });this.queue=task.then(()=>{},()=>{});return task;

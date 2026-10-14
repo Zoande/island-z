@@ -14,6 +14,24 @@ export function slabGeometry(id:string):GeometryData[]{
   for(let ix=0;ix<cols;ix++)for(let iz=0;iz<rows;iz++)parts.push(boxGeometry([(ix+.5)*slab.width/cols-slab.width/2,slab.height/2,(iz+.5)*slab.depth/rows-slab.depth/2],[slab.width/cols-.002,slab.height,slab.depth/rows-.002],d.material!));
   return mergeGeometry(parts);
 }
+/** Distinct workbench geometry built from shared, lit surface materials. */
+export function craftingDeskGeometry():GeometryData[]{
+  const parts:GeometryData[]=[];
+  // Three broad boards make a visibly worked top with narrow seams.
+  for(let i=0;i<3;i++)parts.push(boxGeometry([0,.92,(i-1)*.30],[1.65,.14,.298],'wall-wood'));
+  for(const x of [-.70,.70])for(const z of [-.34,.34])parts.push(boxGeometry([x,.45,z],[.14,.9,.14],'wall-wood'));
+  parts.push(boxGeometry([0,.27,-.34],[1.28,.10,.10],'wall-wood'),boxGeometry([0,.27,.34],[1.28,.10,.10],'wall-wood'));
+  parts.push(boxGeometry([-.64,.27,0],[.10,.10,.58],'wall-wood'),boxGeometry([.64,.27,0],[.10,.10,.58],'wall-wood'));
+  // Rear tool board and a narrow shelf hold small hand tools above the bench.
+  parts.push(boxGeometry([0,1.20,-.38],[1.38,.50,.08],'wall-wood'),boxGeometry([0,1.04,-.25],[1.28,.07,.20],'wall-wood'));
+  for(const x of [-.48,-.24,0,.24,.48]){
+    parts.push(boxGeometry([x,1.20,-.326],[.045,.23,.025],'iron'));
+    parts.push(boxGeometry([x,1.34,-.326],[.13,.045,.035],'iron'));
+  }
+  // A front vise gives the desk a distinct silhouette and practical detail.
+  parts.push(boxGeometry([.48,.91,.49],[.34,.16,.16],'wall-wood'),boxGeometry([.48,.79,.53],[.035,.07,.08],'iron'));
+  return mergeGeometry(parts);
+}
 export function boxGeometry(center:number[],size:number[],material:string):GeometryData {
   const vertices:number[]=[],indices:number[]=[];
   const faces=[[[0,0,1],[[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]],[[0,0,-1],[[1,-1,-1],[-1,-1,-1],[-1,1,-1],[1,1,-1]]],[[1,0,0],[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]]],[[-1,0,0],[[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]]],[[0,1,0],[[-1,1,1],[1,1,1],[1,1,-1],[-1,1,-1]]],[[0,-1,0],[[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]]]];

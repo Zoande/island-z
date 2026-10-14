@@ -7,9 +7,15 @@ import type {AddressInfo} from 'node:net';
 import {createWorldServer} from '../server/app';
 import {WebSocket,WebSocketServer} from 'ws';
 import {decodeMessage,encodeMessage,PROTOCOL_VERSION} from '../shared/network';
+import {BuildStore} from '../server/build-store';
+import {WorldJournal} from '../server/journal';
+import {emptyInventory,addItems,countItem} from '../shared/inventory';
 
 mkdirSync('artifacts',{recursive:true});
 const origin='http://127.0.0.1:4118',prefix=resolve('artifacts/network-worker-'),directory=mkdtempSync(prefix);
+// Test-only materials exercise real worker crafting and private inventory events.
+const fixtureWorld=new BuildStore({seed:'network-worker-check',islandSizeMeters:1024}),fixtureJournal=new WorldJournal(directory,fixtureWorld.worldKey);
+await fixtureJournal.loadWorld();await fixtureJournal.append({kind:'inventory',inventory:{id:'worker-test-client-00001',state:addItems(emptyInventory(),'wood',10)!}});await fixtureJournal.close();
 const server=createWorldServer({seed:'network-worker-check',islandSizeMeters:1024},{saveDirectory:directory,origins:[origin]});
 await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
 const api=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -40,6 +46,18 @@ try{
  const waitFor=async(predicate:any,timeout=30000,arg:any=undefined)=>page.waitForFunction(predicate,arg,{timeout});
  await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.type==='welcome')).catch(async error=>{report.startDebug=await page.evaluate(()=>({workerErrors:(window as any).__workerErrors,messages:(window as any).__workerMessages}));report.browserErrors=browserErrors;report.viteOutput=output;throw error;});
  const firstWelcome=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.type==='welcome').message);
+ if(countItem(firstWelcome.inventory,'wood')!==10)throw new Error('Worker welcome missed its private inventory');
+ await page.evaluate(()=>((window as any).__worker).postMessage({type:'command',rpc:20,kind:'craft',request:{requestId:'worker-craft-torch-0001',recipeId:'torch'}}));
+ await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===20));
+ const crafted=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===20));
+ if(!crafted.value?.ok||countItem(crafted.value.inventory,'torch')!==2||countItem(crafted.value.inventory,'wood')!==8)throw new Error('Worker did not craft and spend the exact resources');
+ await page.evaluate(()=>((window as any).__worker).postMessage({type:'command',rpc:21,kind:'move',request:{requestId:'worker-move-torch-0001',from:1,to:9}}));
+ await waitFor(()=>((window as any).__workerMessages??[]).some((m:any)=>m.rpc===21));
+ const movedInventory=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.rpc===21));
+ if(!movedInventory.value?.ok||movedInventory.value.inventory.slots[9]?.item!=='torch')throw new Error('Worker inventory move did not reach the pack');
+ const inventoryEvent=await page.evaluate(()=>((window as any).__workerMessages as any[]).find(m=>m.type==='inventory'&&m.requestId==='worker-move-torch-0001'));
+ if(!inventoryEvent||inventoryEvent.inventory.slots[9]?.count!==2)throw new Error('Private inventory snapshot was not forwarded by the worker');
+ report.inventory={craftedTorches:2,spentWood:2,packSlot:9,privateWorkerSnapshot:true};
  const cell=`${Math.floor(firstWelcome.state.feet[0]/512)}:${Math.floor(firstWelcome.state.feet[2]/512)}`;
  peer=new WebSocket(api.replace(/^http/,'ws')+'/api/events',{headers:{Origin:origin}});
  peer.on('message',data=>{try{peerEvents.push(decodeMessage(new Uint8Array(data as Buffer)));}catch(e){protocolErrors.push(String(e));}});
@@ -82,6 +100,7 @@ try{
  await waitFor(()=>((window as any).__workerMessages??[]).filter((m:any)=>m.type==='welcome').length>=2,30000);
  const reconnectedWelcome=await page.evaluate(()=>[...(window as any).__workerMessages as any[]].filter(m=>m.type==='welcome').at(-1).message);
  if(!reconnectedWelcome.resumeAccepted)throw new Error(`Server rejected reconnect replay (${reconnectedWelcome.resumeReason}; inputs=${reconnectedWelcome.resumeInputCount??0})`);
+ if(reconnectedWelcome.inventory.slots[9]?.item!=='torch'||countItem(reconnectedWelcome.inventory,'wood')!==8)throw new Error('Reconnect lost the crafted inventory');
  const correction=Math.hypot(reconnectedWelcome.state.feet[0]-serverState[0],reconnectedWelcome.state.feet[2]-serverState[2]);
  if(correction<.15||correction>10.7)throw new Error(`Reconnect did not count bounded server-checked offline movement (${correction.toFixed(2)}m)`);
  report.reconnect={serverState,offlineMoved,reconnected:reconnectedWelcome.state.feet,acceptedOfflineDistance:correction,replayedInputs:reconnectedWelcome.resumeInputCount,graceMs:2000};

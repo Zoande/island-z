@@ -75,20 +75,18 @@ within normal tool reach, so geometry and target-selection work remain.
 
 ## Building
 
-The bottom-center hotbar has nine slots. **Q / E** cycles backward/forward within
-the selected group. Reselecting a slot preserves its current choice.
+The bottom-center hotbar has nine inventory slots. **1–9** selects a slot; select
+an empty slot or a resource stack to use your hands. **E** opens a twenty-slot
+pack (five columns, four rows), with Health and Craft tabs beside it. Click a
+stack and a destination to move, merge, or swap items. Stacks hold up to 100.
 
-| Slot | Catalogue group |
-| --- | --- |
-| 1 | Rocks: twelve shapes in two sizes |
-| 2 | Trees: oak, birch and palm variants |
-| 3 | Walls: timber, stone, solid logs and brick |
-| 4 | Floors: timber and stone |
-| 5 | Roofs: timber and stone |
-| 6 | Lighting: ground torch, wall torch and campfire |
-| 7 | Furniture: bed, table and chair |
-| 8 | Attachments: timber door, braced door and window |
-| 9 | Empty hands; hide the preview |
+Successful mining collects **wood, dirt, sand, and stone**. Hand crafting makes
+walls, floors, torches, and a **crafting desk**. Aim at a placed desk and press
+**E** to access expanded recipes for roofs, furniture, doors, windows, and more.
+Building consumes a crafted item. Player inventories are private and persisted;
+retries cannot spend or grant an item twice. The segmented Health diagram is a
+foundation for future body injuries. See [inventory and crafting](docs/inventory-and-crafting.md)
+for controls and the multiplayer transaction model.
 
 Mouse wheel rotates precisely (one
 degree per typical wheel notch); **T** turns 90 degrees; **left click** places.
@@ -425,6 +423,7 @@ builds; T rotates the building preview. Real holes affect collision and shadows.
 Cuts, mining, removals, floor grading, openings, and fallen tree pieces are saved.
 Ground mining supports pits and tunnels. A thin surface layer follows the local
 terrain; exposed mountain interiors are stone regardless of altitude. Mining
-creates no inventory drops. See [mining](docs/mining.md) for scope and architecture.
+collects resources directly into inventory when there is room; no pickup drops
+are spawned. See [mining](docs/mining.md) for scope and architecture.
 See [destruction foundations and checks](docs/destruction.md) for architecture,
 controls, preparation assets, synchronization, and diagnostics.

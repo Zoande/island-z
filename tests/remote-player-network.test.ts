@@ -35,7 +35,9 @@ describe('remote multiplayer client',()=>{
   it('clears remote avatars as soon as transport disconnects or welcomes a fresh session',async()=>{
     vi.stubGlobal('location',{origin:'http://localhost'});
     const {MultiplayerClient}=await import('../client/multiplayer');
+    const {InventoryPrediction}=await import('../client/inventory-state');
     const client=Object.create(MultiplayerClient.prototype) as any;
+    client.inventoryPrediction=new InventoryPrediction();
     client.renderer={remotePlayers:[{id:'departed',nickname:'Old',feet:[1,0,1]}]};
     client.remoteTimeline=new RemotePlayerTimeline();client.remoteTimeline.push(0,1000,[{id:'departed',nickname:'Old',feet:[1,0,1]}]);client.connected=true;
     client.requests=new Map();client.state=undefined;client.welcomeResolve=()=>{};client.welcomeReject=()=>{};

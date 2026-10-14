@@ -5,9 +5,12 @@ import type {IslandRenderer} from './renderer';
 import type {CharacterState,CharacterInput} from '../shared/character';
 import {apiBase,socketURL} from './api';
 import {RemotePlayerTimeline} from './remote-player-timeline';
+import {InventoryPrediction} from './inventory-state';
 export class MultiplayerClient {
  private worker:Worker;private rpc=0;private requests=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>();private welcomeResolve:()=>void=()=>{};private welcomeReject:(e:Error)=>void=()=>{};
  readonly ready:Promise<void>;connected=false;worldTime=0;private state?:CharacterState;private frames:any[]=[];private building?:BuildingController;private identity:string;
+ private inventoryPrediction=new InventoryPrediction();
+ get inventory(){return this.inventoryPrediction.state;}
  readonly metrics={rtt:0,correction:0,pending:0,snapshotHz:0,sentBytes:0,receivedBytes:0,messages:0};private snapshotTimes:number[]=[];private remoteTimeline=new RemotePlayerTimeline();
  readonly transport:BuildTransport={snapshot:async cells=>this.request('baseline',{cells}),place:async request=>this.command('build',request),door:async request=>this.command('build',request)};
  constructor(config:WorldConfig,readonly camera:PlayerCamera,readonly renderer:IslandRenderer){
@@ -18,10 +21,16 @@ export class MultiplayerClient {
  }
  attach(building:BuildingController){this.building=building;for(const frame of this.frames.splice(0))this.apply(frame);}
  private request(type:string,value:any){const rpc=++this.rpc;return new Promise<any>((resolve,reject)=>{this.requests.set(rpc,{resolve,reject});this.worker.postMessage({type,rpc,...value});});}
- command(kind:string,request:any){return this.request('command',{kind,request});}
+ async command(kind:string,request:any){
+   if(!this.connected)throw new Error('World disconnected; reconnecting');
+   this.inventoryPrediction.predict(kind,request);
+   try{const result=await this.request('command',{kind,request});if(result.inventory)this.inventoryPrediction.accept(result.inventory,request.requestId);return result;}
+   finally{this.inventoryPrediction.settle(request.requestId);}
+ }
  setInterest(cells:string[]){this.worker.postMessage({type:'interest',cells});}
  private receive(m:any){if(m.rpc){const p=this.requests.get(m.rpc);if(p){this.requests.delete(m.rpc);if(m.error)p.reject(new Error(m.error));else p.resolve(m.value);}return;}
-   if(m.type==='welcome'){this.connected=true;this.remoteTimeline.reset();this.snapshotTimes=[];this.renderer.remotePlayers=[];this.state=m.message.state;this.camera.character.restore(this.state!);this.camera.update(0);this.welcomeResolve();}
+   if(m.type==='welcome'){this.connected=true;this.inventoryPrediction.accept(m.message.inventory);this.remoteTimeline.reset();this.snapshotTimes=[];this.renderer.remotePlayers=[];this.state=m.message.state;this.camera.character.restore(this.state!);this.camera.update(0);this.welcomeResolve();}
+   else if(m.type==='inventory')this.inventoryPrediction.accept(m.inventory,m.requestId);
    else if(m.type==='state'){this.state=m.state;this.worldTime=m.time;this.connected=m.connected;}
    else if(m.type==='status'){this.connected=m.connected;if(!m.connected){this.remoteTimeline.reset();this.renderer.remotePlayers=[];}if(m.error&&!this.state)this.welcomeReject(new Error(m.error));}
    else if(m.type==='fatal'){this.connected=false;this.remoteTimeline.reset();this.renderer.remotePlayers=[];this.welcomeReject(new Error(m.error));this.renderer.onFatal?.(m.error);}

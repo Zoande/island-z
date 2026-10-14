@@ -12,6 +12,7 @@ import { TerrainStream } from './streaming';
 import {qualityDescriptions,type Quality} from './quality';
 import {BuildingController} from './building';
 import {DaylightClock,daylightLighting} from '../shared/daylight';
+import {InventoryController} from './inventory';
 
 const canvas=document.querySelector<HTMLCanvasElement>('#world')!;
 const app=document.querySelector<HTMLDivElement>('#app')!;
@@ -51,7 +52,7 @@ function daylightUI() {
 }
 saveDaylight();daylightUI();
 let renderer:IslandRenderer|undefined,stream:TerrainStream|undefined,camera:PlayerCamera|undefined,building:BuildingController|undefined;
-let multiplayer:MultiplayerClient|undefined;
+let multiplayer:MultiplayerClient|undefined,inventory:InventoryController|undefined;
 let animation=0,attempt=0,failed=false;
 const events=new AbortController();
 function fail(message:string) {
@@ -60,7 +61,7 @@ function fail(message:string) {
   get('loading-line').hidden=true;get('retry').hidden=false;overlay.classList.remove('hidden');get('status').textContent='Paused';
   if(document.pointerLockElement===canvas)document.exitPointerLock();
 }
-function dispose() {cancelAnimationFrame(animation);multiplayer?.dispose();multiplayer=undefined;building?.dispose();camera?.dispose();stream?.dispose();renderer?.dispose();building=undefined;camera=undefined;stream=undefined;renderer=undefined;}
+function dispose() {cancelAnimationFrame(animation);inventory?.dispose();inventory=undefined;multiplayer?.dispose();multiplayer=undefined;building?.dispose();camera?.dispose();stream?.dispose();renderer?.dispose();building=undefined;camera=undefined;stream=undefined;renderer=undefined;}
 async function start() {
   const currentAttempt=++attempt;dispose();failed=false;overlay.classList.remove('hidden');
   get('overlay-title').textContent='Finding the island';get('retry').hidden=true;get('loading-line').hidden=false;
@@ -98,10 +99,16 @@ async function start() {
     await renderer.initialize(progress);if(currentAttempt!==attempt||failed)return;
     r.quality=(get('quality')as HTMLSelectElement).value as 'low'|'medium'|'high';r.daylightHour=daylight.hour(clockNow());
     multiplayer=new MultiplayerClient(config,camera,r);progress('Joining the world');await multiplayer.ready;building=new BuildingController(camera,world,r,multiplayer.transport);building.network=multiplayer;multiplayer.attach(building);progress('Loading saved builds');await building.initialize();if(currentAttempt!==attempt||failed)return;
+    const network=multiplayer,controller=building;
+    inventory=new InventoryController(camera,{getInventory:()=>network.inventory,getSelected:()=>controller.selected,select:slot=>controller.select(slot),isConnected:()=>network.connected,
+      craft:async(recipeId,stationId)=>{const result=await network.command('craft',{requestId:crypto.randomUUID(),recipeId,stationId});if(!result.ok)throw new Error(result.error??'Crafting could not be completed');return result;},
+      move:async(from,to)=>{const result=await network.command('move',{requestId:crypto.randomUUID(),from,to});if(!result.ok)throw new Error(result.error??'Items could not be moved');return result;},
+      onOpenChange:open=>{controller.menuOpen=open;controller.update(0);},
+    });inventory.update(network.inventory,100);
     stream=new TerrainStream(config,r.profiler.enabled);stream.update(camera.position[0],camera.position[2],r.distance);
     get('status').textContent='Preparing';progress('Preparing the shoreline…');
     const c=camera,s=stream,b=building;
-    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,multiplayer,daylight,perf:r.profiler,get failed(){return failed;}};
+    if(import.meta.env.DEV)(window as any).__island={renderer:r,camera:c,player:c.character,stream:s,world,descriptor,building:b,multiplayer,inventory,daylight,perf:r.profiler,get failed(){return failed;}};
     let last=performance.now(),lastStream=-Infinity,lastUI=0,fps=0,respawns=0,noteUntil=0;
     const frame=(now:number)=>{
       if(failed||currentAttempt!==attempt)return;
@@ -109,6 +116,7 @@ async function start() {
         const interval=now-last,dt=interval/1000;last=now;r.profiler.begin(interval);
         let stage=r.profiler.mark();multiplayer!.update();r.profiler.endStage('player',stage);stage=r.profiler.mark();fps=fps*.9+1/Math.max(dt,.001)*.1;
         b.update(dt);r.profiler.endStage('building',stage);stage=r.profiler.mark();
+        inventory!.update(multiplayer!.inventory,100);
         if(now-lastStream>350) {s.update(c.position[0],c.position[2],r.distance);lastStream=now;}
         r.profiler.endStage('streaming',stage);
         if(s.error)throw new Error(s.error);
@@ -137,6 +145,7 @@ async function start() {
   }catch(error){if(currentAttempt===attempt)fail(error instanceof Error?error.message:String(error));}
 }
 get('retry').addEventListener('click',()=>void start(),{signal:events.signal});
+window.addEventListener('keydown',e=>{if(e.code!=='KeyE'||e.repeat||!inventory||failed)return;const target=e.target as HTMLElement;if(target.matches('input,textarea,select,[contenteditable="true"]'))return;e.preventDefault();if(inventory.isOpen)inventory.close();else inventory.open(building?.deskTarget?.id);},{signal:events.signal});
 document.querySelector('.panel-head')!.addEventListener('click',()=>{
   const collapsed=document.querySelector('.panel')!.classList.toggle('collapsed');
   document.querySelector('.panel-head')!.setAttribute('aria-expanded',String(!collapsed));get('collapse').textContent=collapsed?'+':'−';

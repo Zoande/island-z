@@ -4,7 +4,7 @@ import type {IslandRenderer} from './renderer';
 import type {WorldGenerator} from '../shared/world';
 import {BuildScene} from '../shared/build-scene';
 import {solvePlacement,type Placement} from '../shared/build-placement';
-import {BUILD_CELL,buildCell,buildProp,hotbarSlots,catalogueChoices,objectDefinition,validBuildObject,type BuildObject,type BuildRequest,type BuildResult,type DoorRequest} from '../shared/object-registry';
+import {BUILD_CELL,buildCell,buildProp,objectRegistry,objectDefinition,validBuildObject,type BuildObject,type BuildRequest,type BuildResult,type DoorRequest} from '../shared/object-registry';
 import {qualities} from './quality';
 import {DestructionController} from './destruction';
 import type {WorldPatch} from '../shared/destruction';
@@ -16,35 +16,30 @@ export interface BuildTransport {
   place(request:BuildRequest,signal:AbortSignal):Promise<BuildResult>;
   door?(request:DoorRequest,signal:AbortSignal):Promise<BuildResult>;
 }
-const icons:Record<string,string>={rock:'<path d="M6 24 11 10 25 6 34 17 30 30 16 32Z"/><path d="m11 10 9 10 14-3M20 20l-4 12"/>',tree:'<path d="M17 32V20h6v12M20 4c-7 0-12 6-10 10-6 5-2 13 6 12h8c8 1 12-7 6-12C32 10 27 4 20 4Z"/>',wood:'<path d="M7 7h26v26H7ZM13 7v26M20 7v26M27 7v26M7 13h26M7 27h26"/>',stone:'<path d="M5 8h30v24H5ZM5 16h30M5 24h30M15 8v8M27 8v8M11 16v8M23 16v8M16 24v8M29 24v8"/>',torch:'<path d="M17 22h6l-1 13h-4ZM14 18h12l-3 5h-6ZM20 3c1 6 7 7 5 13-1 3-9 3-10 0-2-4 3-5 3-9 1 2 2 2 2-4Z"/>'};
 /** Owns optimistic overlays and bounded region snapshots, independently of rendering. */
-Object.assign(icons,{floor:'<path d="m4 22 16-9 16 9-16 9ZM4 22v5l16 9 16-9v-5M20 31v5M12 18l16 9M20 13l16 9"/>',roof:'<path d="m3 25 17-17 17 17M7 22v11h26V22M12 16l17 17M20 8l13 14"/>',fire:'<path d="m7 30 26 5M7 35l26-5M20 4c0 7 10 10 7 18-3 7-16 7-16-1 0-4 5-6 6-11 1 3 3 4 3-6Z"/>',bed:'<path d="M5 34V10h3v17h27v7M8 18h12v9M20 20h15v7M12 18v-5h7v5M5 30h30"/>',table:'<path d="M4 16h32v5H4ZM8 21v15M32 21v15M5 16l5-8h20l5 8M10 21h20"/>',chair:'<path d="M10 4h20v18H10ZM8 22h24v5H8ZM10 27v9M30 27v9M10 10h20M10 16h20"/>',door:'<path d="M7 36V4h26v32M12 9h17v27H12ZM24 22h2M12 14h17M12 30h17"/>',window:'<path d="M5 8h30v25H5ZM8 11h24v19H8ZM20 11v19M8 21h24M3 34h34"/>'});
 export class BuildingController {
   network?:MultiplayerClient;private lastCellSignature='';
   readonly scene:BuildScene;readonly destruction:DestructionController;selected=8;variant=0;rotation=0;tilt=0;preview:Placement|null=null;
   readonly pending=new Map<string,BuildObject>();private confirmed=new Map<string,{object:BuildObject;revision:number}>();
   private cells=new Map<string,Cell>();private worldKey='';private connection='Connecting';private worldChanged=false;
   private polling=false;private lastPoll=-Infinity;private abort=new AbortController();
-  private choices=new Map<number,number>();private previewSignature='';private previousLook='';private lastMotion=0;
+  menuOpen=false;private previewSignature='';private previousLook='';private lastMotion=0;
   private doorBusy=new Set<string>();private interaction:BuildObject|null=null;private interactionSignature='';
-  get definitionId(){return catalogueChoices(this.selected)[this.choices.get(this.selected)??0]?.definitionId;}
+  get definitionId(){const stack=this.network?.inventory?.slots[this.selected];return stack&&objectRegistry.has(stack.item)?stack.item:undefined;}
+  get deskTarget(){const hit=this.scene.raycast([...this.camera.position]as [number,number,number],this.camera.forward,3);return hit?.solid?.object?.definitionId==='crafting-desk'?hit.solid.object:undefined;}
   private notice='';private noticeUntil=0;private hudSignature='';private disposed=false;
   constructor(readonly camera:PlayerCamera,world:WorldGenerator,readonly renderer:IslandRenderer,readonly transport:BuildTransport) {
     this.scene=new BuildScene(world);renderer.buildScene=this.scene;this.destruction=new DestructionController(this,camera,renderer,message=>this.notify(message));
-    const hotbar=document.getElementById('hotbar')!;
-    hotbar.innerHTML=hotbarSlots.map((group,i)=>{const d=group?objectDefinition(group[0]):null;return `<button class="hotbar-slot" data-slot="${i}" aria-label="${i+1}: ${d?.label??'Empty slot'}" aria-pressed="${i===this.selected}"><span class="slot-number">${i+1}</span>${d?`<svg viewBox="0 0 40 40" aria-hidden="true">${icons[d.icon]??icons.wood}</svg><span class="slot-label">${d.label}</span><span class="slot-choices">1 / ${catalogueChoices(i).length}</span>`:'<span class="slot-label">Hands</span>'}</button>`;}).join('');
     const options={signal:this.abort.signal};
-    hotbar.addEventListener('click',e=>{const button=(e.target as HTMLElement).closest<HTMLElement>('[data-slot]');if(button)this.select(Number(button.dataset.slot));},options);
-    window.addEventListener('keydown',e=>{if(document.pointerLockElement!==camera.canvas||e.repeat)return;if(/^Digit[1-9]$/.test(e.code)){e.preventDefault();this.select(Number(e.code.slice(-1))-1);}else if((e.code==='KeyQ'||e.code==='KeyE')&&hotbarSlots[this.selected]){e.preventDefault();this.cycle(e.code==='KeyQ'?-1:1);}else if(e.code==='KeyT'&&hotbarSlots[this.selected]){e.preventDefault();if(this.definitionId&&objectDefinition(this.definitionId).family==='floor')this.adjustTilt(Math.PI/36);else this.rotate(Math.PI/2);}else if(e.code==='KeyF'){e.preventDefault();this.toggleDoor();}},options);
-    camera.canvas.addEventListener('wheel',e=>{if(document.pointerLockElement!==camera.canvas||!hotbarSlots[this.selected])return;e.preventDefault();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?100:1);if(this.definitionId&&objectDefinition(this.definitionId).family==='floor')this.adjustTilt(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);else this.rotate(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);},{...options,passive:false});
+    window.addEventListener('keydown',e=>{if(this.menuOpen||document.pointerLockElement!==camera.canvas||e.repeat)return;if(/^Digit[1-9]$/.test(e.code)){e.preventDefault();this.select(Number(e.code.slice(-1))-1);}else if(e.code==='KeyT'&&this.definitionId){e.preventDefault();if(objectDefinition(this.definitionId).family==='floor')this.adjustTilt(Math.PI/36);else this.rotate(Math.PI/2);}else if(e.code==='KeyF'){e.preventDefault();this.toggleDoor();}},options);
+    camera.canvas.addEventListener('wheel',e=>{if(this.menuOpen||document.pointerLockElement!==camera.canvas||!this.definitionId)return;e.preventDefault();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?100:1);if(objectDefinition(this.definitionId).family==='floor')this.adjustTilt(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);else this.rotate(Math.max(-5,Math.min(5,delta/100))*Math.PI/180);},{...options,passive:false});
     camera.canvas.addEventListener('click',e=>{if(e.button===0&&document.pointerLockElement===camera.canvas)this.place();},options);
   }
   select(slot:number) {
-    if(!Number.isInteger(slot)||slot<0||slot>=hotbarSlots.length)return;this.selected=slot;this.rotation=0;this.tilt=0;this.noticeUntil=0;
-    this.variant=catalogueChoices(slot)[this.choices.get(slot)??0]?.variant??0;
+    if(!Number.isInteger(slot)||slot<0||slot>=9)return;this.selected=slot;this.rotation=0;this.tilt=0;this.noticeUntil=0;
+    this.variant=0;
     this.previewSignature='';this.update(0);
   }
-  cycle(direction:number){const choices=catalogueChoices(this.selected);if(!choices.length)return;const index=((this.choices.get(this.selected)??0)+direction+choices.length)%choices.length;this.choices.set(this.selected,index);this.variant=choices[index].variant;this.noticeUntil=0;this.previewSignature='';this.hudSignature='';this.update(0);}
   private rotate(angle:number){if(this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top'&&this.definitionId&&objectDefinition(this.definitionId).family==='wall')return;this.rotation=(this.rotation+angle)%(Math.PI*2);this.previewSignature='';this.update(0);}
   private adjustTilt(angle:number){this.tilt=Math.max(-Math.PI/6,Math.min(Math.PI/6,this.tilt+angle));this.previewSignature='';this.update(0);}
   private request(id='preview-00000000'):BuildRequest {
@@ -57,13 +52,14 @@ export class BuildingController {
     this.destruction.update();
     const now=performance.now(),look=`${this.camera.position.join(',')}/${this.camera.yaw}/${this.camera.pitch}`;
     if(look!==this.previousLook){this.previousLook=look;this.lastMotion=now;}
-    const id=this.definitionId,signature=`${look}/${id}/${this.variant}/${this.rotation}/${this.tilt}/${this.scene.revision}/${this.camera.character.grounded}/${this.connection}/${this.destruction.active}`;
+    const id=this.definitionId,signature=`${look}/${id}/${this.variant}/${this.rotation}/${this.tilt}/${this.scene.revision}/${this.camera.character.grounded}/${this.connection}/${this.destruction.active}/${this.menuOpen}`;
     if(signature!==this.previewSignature) {
-      this.previewSignature=signature;this.preview=id&&!this.destruction.active&&this.camera.character.ready?solvePlacement(this.scene,this.request()):null;
+      this.previewSignature=signature;this.preview=id&&!this.menuOpen&&!this.destruction.active&&this.camera.character.ready?solvePlacement(this.scene,this.request()):null;
       if(this.preview&&this.connection!=='Connected'){this.preview.valid=false;this.preview.reason=this.connection==='Connecting'?'Connecting building service':this.worldChanged?'World changed · refresh to build':'Building unavailable · retrying';}
     }
     const interactionSignature=`${look}/${this.scene.revision}`;if(interactionSignature!==this.interactionSignature){this.interactionSignature=interactionSignature;this.interaction=null;
-      if(this.scene.placed.query(this.camera.position[0],this.camera.position[2],4).some(s=>s.object&&objectDefinition(s.object.definitionId).attachment==='door')){const hit=this.scene.raycast([...this.camera.position]as [number,number,number],this.camera.forward,3);this.interaction=hit?.solid?.object&&objectDefinition(hit.solid.object.definitionId).attachment==='door'?hit.solid.object:null;}
+      const interactive=(o:BuildObject)=>o.definitionId==='crafting-desk'||objectDefinition(o.definitionId).attachment==='door';
+      if(this.scene.placed.query(this.camera.position[0],this.camera.position[2],4).some(s=>s.object&&interactive(s.object))){const hit=this.scene.raycast([...this.camera.position]as [number,number,number],this.camera.forward,3);this.interaction=hit?.solid?.object&&interactive(hit.solid.object)?hit.solid.object:null;}
     }
     this.renderer.buildPreview=this.preview?{prop:buildProp(this.preview.object),valid:this.preview.valid,motion:Math.max(0,1-(now-this.lastMotion)/450)}:null;
     if(this.renderer.buildPreview&&this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='opening'){
@@ -73,23 +69,20 @@ export class BuildingController {
     const cells=this.wantedCells().join(',');if(this.network&&!this.network.connected)this.connection='Disconnected';if(!this.polling&&!this.worldChanged&&(cells!==this.lastCellSignature||this.connection!=='Connected'&&now-this.lastPoll>2000))void this.sync();
   }
   private updateHud(now:number) {
-    const id=this.definitionId,notice=now<this.noticeUntil?this.notice:'',interaction=this.interaction?`F ${this.interaction.state?.open?'close':'open'} door`:'',reason=notice||this.preview?.reason||(!this.worldKey?'Connecting building service':'');
-    const signature=`${this.selected}/${id}/${this.variant}/${reason}/${interaction}/${this.preview?.valid}/${this.pending.size}`;if(signature===this.hudSignature)return;this.hudSignature=signature;
-    document.querySelectorAll<HTMLElement>('.hotbar-slot').forEach((slot,i)=>{slot.classList.toggle('selected',i===this.selected);slot.setAttribute('aria-pressed',String(i===this.selected));});
-    const button=document.querySelector<HTMLElement>(`[data-slot="${this.selected}"]`);if(id&&button){const d=objectDefinition(id);button.querySelector('.slot-label')!.textContent=d.label;button.querySelector('.slot-choices')!.textContent=`${(this.choices.get(this.selected)??0)+1} / ${catalogueChoices(this.selected).length}`;button.querySelector('svg')!.innerHTML=icons[d.icon]??icons.wood;button.setAttribute('aria-label',`${this.selected+1}: ${d.label}, choice ${(this.choices.get(this.selected)??0)+1}`);}
-    const hint=document.getElementById('build-hint')!;hint.textContent=id?`${objectDefinition(id).label} · ${reason}${this.pending.size?' · Saving…':''}`:notice||'1–8 build · Q / E cycle · 9 empty hands';
+    const id=this.definitionId,notice=now<this.noticeUntil?this.notice:'',desk=this.interaction?.definitionId==='crafting-desk'?'E use crafting desk':'',door=this.interaction&&!desk?`F ${this.interaction.state?.open?'close':'open'} door`:'',interaction=desk||door,reason=notice||this.preview?.reason||(!this.worldKey?'Connecting building service':'');
+    const signature=`${this.selected}/${id}/${reason}/${interaction}/${this.preview?.valid}/${this.pending.size}/${this.menuOpen}`;if(signature===this.hudSignature)return;this.hudSignature=signature;
+    const hint=document.getElementById('build-hint')!;hint.textContent=id?`${objectDefinition(id).label} · ${reason}${this.pending.size?' · Saving…':''}`:notice||'E inventory · 1–9 select · Right-click gather';
     hint.classList.toggle('invalid',!!notice||!!this.preview&&!this.preview.valid);
-    const controls=document.getElementById('build-controls')!;controls.hidden=!id;
-    controls.textContent=id&&objectDefinition(id).family==='floor'?'Q / E previous / next · Click place · T tilt 5° · Wheel tilt 1° · Up to 30°':'Q / E previous / next · Click place · Wheel fine rotate · T turn 90°';
-    if(id&&objectDefinition(id).attachment)controls.textContent='Q / E cycle · Click attach · alignment follows the wall';
-    if(id&&['floor','roof'].includes(objectDefinition(id).family)&&this.preview?.object.support.kind!=='terrain')controls.textContent=objectDefinition(id).family==='floor'?'Q / E cycle · Click connect · T / Wheel tilt · follows support':'Q / E cycle · Click connect · alignment follows the support';
-    if(id&&this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top')controls.textContent=objectDefinition(id).family==='roof'?'Q / E cycle · Click place · T switch roof side':objectDefinition(id).family==='floor'?'Q / E cycle · Click stack · T / Wheel tilt':'Q / E cycle · Click stack · rotation follows the wall below';
-    controls.textContent+=' \u00b7 Right-click cut/dismantle \u00b7 Hold R repair';controls.hidden=false;
-    if(interaction){hint.textContent+=` · ${interaction}`;controls.hidden=false;}
+    const controls=document.getElementById('build-controls')!;
+    controls.textContent=id&&objectDefinition(id).family==='floor'?'Click place · T tilt 5° · Wheel tilt 1°':'Click place · Wheel fine rotate · T turn 90°';
+    if(id&&objectDefinition(id).attachment)controls.textContent='Click attach · alignment follows the wall';
+    if(id&&this.preview?.object.support.kind==='wall'&&this.preview.object.support.socket==='top')controls.textContent=objectDefinition(id).family==='roof'?'Click place · T switch roof side':objectDefinition(id).family==='floor'?'Click connect · T / Wheel tilt':'Click stack · follows wall below';
+    controls.textContent+=' · Right-click cut/dismantle · Hold R repair';controls.hidden=this.menuOpen;
+    if(interaction)hint.textContent+=` · ${interaction}`;
   }
   private notify(message:string){this.notice=message;this.noticeUntil=performance.now()+4500;this.hudSignature='';}
   place() {
-    this.update(0);if(this.destruction.active||!this.preview)return;if(!this.preview.valid){this.notify(this.preview.reason);return;}
+    this.update(0);if(this.menuOpen||this.destruction.active||!this.preview)return;if(!this.preview.valid){this.notify(this.preview.reason);return;}
     this.noticeUntil=0;
     const request=this.request(crypto.randomUUID()),object={...this.preview.object,id:request.requestId};
     request.expected={position:[...object.position],rotation:object.rotation,support:{...object.support},normal:[...object.normal]};
@@ -110,7 +103,7 @@ export class BuildingController {
     const dependent=[...this.pending.values()].filter(o=>o.support.kind!=='terrain'&&o.support.id===id);
     this.pending.delete(id);this.scene.remove(id);for(const o of dependent)this.undo(o.id);this.previewSignature='';
   }
-  toggleDoor(){this.update(0);const original=this.interaction;if(!original||this.pending.has(original.id)||this.doorBusy.has(original.id)||this.connection!=='Connected'||!this.transport.door)return;
+  toggleDoor(){this.update(0);const original=this.interaction;if(!original||objectDefinition(original.definitionId).attachment!=='door'||this.pending.has(original.id)||this.doorBusy.has(original.id)||this.connection!=='Connected'||!this.transport.door)return;
     const object={...original,state:{open:!original.state?.open}},request:DoorRequest={action:'door',requestId:crypto.randomUUID(),worldKey:this.worldKey,objectId:object.id,open:object.state.open,eye:[...this.camera.position]as [number,number,number],direction:this.camera.forward};
     const validation=doorChange(this.scene,request);if(!validation.ok){this.notify(validation.error);return;}
     this.doorBusy.add(object.id);this.pending.set(object.id,object);this.scene.add(object);this.previewSignature='';

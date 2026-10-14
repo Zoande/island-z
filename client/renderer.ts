@@ -19,7 +19,7 @@ import { loadGLB } from './glb';
 import { sceneShader,minedSceneShader,sceneryShader,predictedSceneryShader,impostorBakeShader, skyShader, waterShader, postShader,buildPreviewShader } from './shaders';
 import {wallGeometry} from './wall-geometry';
 import {torchGeometry} from './torch-geometry';
-import {mergeGeometry,slabGeometry,wallTorchGeometry,campfireFlames} from './catalogue-geometry';
+import {mergeGeometry,slabGeometry,wallTorchGeometry,campfireFlames,craftingDeskGeometry} from './catalogue-geometry';
 import {daylightLighting,shadowDirection} from '../shared/daylight';
 import {LIGHTING_FLOATS,packLighting} from './lighting';
 import {objectRegistry} from '../shared/object-registry';
@@ -314,6 +314,7 @@ export class IslandRenderer {
     for(const definition of objectRegistry.values()){
       if(definition.wall&&definition.asset!=='blender')for(const opening of [undefined,'door','window']as const){const stem=`${definition.id}${opening?'-'+opening:''}-0-lod0`,data=[wallGeometry(definition.id,opening)];this.meshes.set(stem,data.map(d=>this.mesh(d)));this.modelBounds.set(stem,modelBounds(data));}
       if(definition.slab){const data=slabGeometry(definition.id);this.meshes.set(`${definition.id}-0-lod0`,data.map(d=>this.mesh(d)));this.modelBounds.set(`${definition.id}-0-lod0`,modelBounds(data));}
+      if(definition.id==='crafting-desk'){const data=craftingDeskGeometry();this.meshes.set('crafting-desk-0-lod0',data.map(d=>this.mesh(d)));this.modelBounds.set('crafting-desk-0-lod0',modelBounds(data));}
     }
     this.meshes.set('torch-0-lod0',torchGeometry().map(data=>this.mesh(data)));
     this.meshes.set('torch-wall-0-lod0',wallTorchGeometry().map(data=>this.mesh(data)));
