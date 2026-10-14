@@ -24,7 +24,8 @@
     "build:server": "node scripts/build-server.mjs",
     "start:server": "node dist-server/index.js",
     "check:multiplayer": "tsx scripts/check-multiplayer.ts",
-    "check:network-worker": "tsx scripts/check-network-worker.ts"
+    "check:network-worker": "tsx scripts/check-network-worker.ts",
+    "check:inventory": "tsx scripts/check-inventory.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",

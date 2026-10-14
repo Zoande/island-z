@@ -1,14 +1,44 @@
 import {describe,it,expect} from 'vitest';
-import {emptyInventory,addItems,consumeItem,countItem,craftRecipe,moveInventory,validateInventory,resourceYield,INVENTORY_SLOTS,INVENTORY_STACK} from '../shared/inventory';
+import {emptyInventory,addItems,collectResource,consumeItem,countItem,craftRecipe,moveInventory,validateInventory,resourceYield,INVENTORY_SLOTS,INVENTORY_STACK} from '../shared/inventory';
 import {BuildStore} from '../server/build-store';
 import {WorldJournal} from '../server/journal';
 import {WorldRuntime} from '../server/world-runtime';
+import {terrainRecord} from '../shared/terrain-volume';
+import {solvePlacement} from '../shared/build-placement';
 import {CHARACTER} from '../shared/character';
+import type {BuildRequest} from '../shared/object-registry';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 describe('survival inventory',()=>{
+ it('crafts, places, and uses a real desk with canonical interaction geometry',async()=>{
+  const events:any[]=[],runtime=new WorldRuntime({seed:'real-inventory-desk',islandSizeMeters:1024},undefined,(_c,m)=>events.push(m));
+  try{
+   await runtime.initialize();await runtime.join('desk-client',{version:1,identity:'real-desk-browser-identity',nickname:'Builder'});const s=runtime.sessions.get('desk-client')!;
+   for(let i=0;i<100&&!s.character.grounded;i++)await new Promise(r=>setTimeout(r,10));
+   s.inventory=addItems(emptyInventory(),'wood',30)!;
+   runtime.command('desk-client',{kind:'craft',inputSeq:0,request:{requestId:'actual-desk-craft-0001',recipeId:'crafting-desk'}});await s.commands;
+   expect(countItem(s.inventory,'crafting-desk')).toBe(1);
+   const feet=[...s.character.feet]as [number,number,number],eye:[number,number,number]=[feet[0],feet[1]+CHARACTER.eyeHeight,feet[2]];let request:BuildRequest|undefined;
+   for(let a=0;a<32&&!request;a++)for(const pitch of [-.8,-.9,-1]){
+    const yaw=a*Math.PI/16,candidate:BuildRequest={requestId:'actual-desk-place-0001',worldKey:runtime.builds.worldKey,definitionId:'crafting-desk',variant:0,rotation:0,feet,eye,standing:true,direction:[Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),-Math.cos(yaw)*Math.cos(pitch)]};
+    const solved=solvePlacement(runtime.builds.scene,candidate);if(solved.valid&&Math.hypot(...solved.object.position.map((v,i)=>v-eye[i]))<2.6){request=candidate;break;}
+   }
+   expect(request,'a reachable desk placement').toBeDefined();
+   runtime.command('desk-client',{kind:'build',inputSeq:0,request});await s.commands;
+   expect(events.find(e=>e.type==='receipt'&&e.id==='actual-desk-place-0001')?.result).toMatchObject({ok:true});expect(countItem(s.inventory,'crafting-desk')).toBe(0);
+   runtime.command('desk-client',{kind:'craft',inputSeq:0,request:{requestId:'actual-desk-roof-0001',recipeId:'roof-wood',stationId:'actual-desk-place-0001'}});await s.commands;
+   expect(events.find(e=>e.type==='receipt'&&e.id==='actual-desk-roof-0001')?.result).toMatchObject({ok:true});expect(countItem(s.inventory,'roof-wood')).toBe(1);expect(countItem(s.inventory,'wood')).toBe(12);
+   runtime.command('desk-client',{kind:'craft',inputSeq:0,request:{requestId:'actual-desk-denied-0001',recipeId:'roof-wood',stationId:'missing-desk'}});await s.commands;
+   expect(events.find(e=>e.type==='receipt'&&e.id==='actual-desk-denied-0001')?.result).toMatchObject({ok:false});expect(countItem(s.inventory,'wood')).toBe(12);
+  }finally{await runtime.close();}
+ },30000);
+ it('collects the remaining space from a harvest without exceeding a full stack',()=>{
+  const full=addItems(emptyInventory(),'stone',INVENTORY_SLOTS*INVENTORY_STACK)!;full.slots[0]={item:'wood',count:99};
+  const collected=collectResource(full,'wood',3)!;expect(collected.slots[0]).toEqual({item:'wood',count:100});expect(full.slots[0]?.count).toBe(99);
+  expect(collectResource(collected,'wood',3)).toBeNull();
+ });
  it('starts empty, stacks to 100, and refuses overflow without changing the source',()=>{
   const empty=emptyInventory();expect(empty.slots).toHaveLength(INVENTORY_SLOTS);expect(empty.slots.every(v=>v===null)).toBe(true);
   const full=addItems(empty,'wood',INVENTORY_STACK+2)!;expect(full.slots.slice(0,2)).toEqual([{item:'wood',count:100},{item:'wood',count:2}]);
@@ -28,6 +58,9 @@ describe('survival inventory',()=>{
  it('maps successfully mined natural materials and excludes built objects',()=>{
   expect(resourceYield({kind:'oak'})?.item).toBe('wood');expect(resourceYield({kind:'rock'})?.item).toBe('stone');
   expect(resourceYield({kind:'wall-wood'})).toBeNull();expect(resourceYield({kind:'terrain'})).toEqual({item:'dirt',count:1});
+  const terrain=terrainRecord([0,0,0],()=>({height:0,normal:[0,1,0]}),()=>[1,0,0,0,0,0,0,0]);
+  expect(resourceYield(terrain.prop,terrain.source,[.5,0,.5])?.item).toBe('sand');
+  expect(resourceYield(terrain.prop,terrain.source,[.5,-1,.5])?.item).toBe('stone');
  });
  it('grants mining yields only from successful non-repair edits and deduplicates retries',async()=>{
   const events:any[]=[],runtime=new WorldRuntime({seed:'inventory-mining',islandSizeMeters:1024},undefined,(_c,m)=>events.push(m));

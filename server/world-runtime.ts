@@ -11,7 +11,7 @@ import {worldSpawn,safeSpawn} from '../shared/spawn';
 import {separatePlayers} from '../shared/player-contact';
 import {PROTOCOL_VERSION,WORLD_HZ,INTEREST_CELL,validInput,validCharacterState,validCell,type InputStep} from '../shared/network';
 import {buildCell,validBuildObject,type BuildObject} from '../shared/object-registry';
-import {emptyInventory,validateInventory,addItems,consumeItem,craftRecipe,moveInventory,recipesList,resourceYield,type InventoryState} from '../shared/inventory';
+import {emptyInventory,validateInventory,collectResource,consumeItem,craftRecipe,moveInventory,recipesList,resourceYield,type InventoryState} from '../shared/inventory';
 import type {WorldConfig} from '../shared/config';
 import type {Point3} from '../shared/rocks';
 import type {WorldPatch} from '../shared/destruction';
@@ -77,7 +77,7 @@ export class WorldRuntime {
    const feet=[...s.character.feet]as Point3,request={...m.request,sessionId:s.id,feet,eye:[feet[0],feet[1]+CHARACTER.eyeHeight,feet[2]],standing:s.character.grounded&&!s.character.swimming,actionTime:s.inputTimes.get(m.inputSeq)??this.time()*1000};
    this.pendingFingerprints.set(id,fingerprint);let result:any,nextInventory:InventoryState|undefined;
    if(m.kind==='action'){
-    result=await this.edits.action(request,(record,point)=>{if(request.action==='repair')return undefined;const yieldItem=resourceYield(record.prop,record.source,point);if(!yieldItem)return undefined;nextInventory=addItems(s.inventory,yieldItem.item,yieldItem.count)??undefined;return nextInventory?{id:s.id,state:nextInventory}:undefined;});
+    result=await this.edits.action(request,(record,point)=>{if(request.action==='repair')return undefined;const yieldItem=resourceYield(record.prop,record.source,point);if(!yieldItem)return undefined;nextInventory=collectResource(s.inventory,yieldItem.item,yieldItem.count)??undefined;return nextInventory?{id:s.id,state:nextInventory}:undefined;});
    }else if(m.kind==='build'){
     const isDoor=request.action==='door',definitionId=request.definitionId as string|undefined;
     if(!isDoor){if(typeof definitionId!=='string'||request.variant!==0)throw new Error('Choose a crafted building item');nextInventory=consumeItem(s.inventory,definitionId,1)??undefined;if(!nextInventory)throw new Error(`You need a ${definitionId} in your inventory`);}

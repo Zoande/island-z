@@ -38,3 +38,10 @@ ID. The client predicts crafting, moves, and item consumption immediately, then
 replays outstanding actions over the confirmed inventory. Retries reuse the same
 receipt and do not spend or grant twice. Expanded recipes require a nearby desk
 with an unobstructed interaction ray on the server.
+
+Validation: `npm test` covers stacks, crafting, persistence, retries, mining
+rewards, optimistic inventory reconciliation, and two WebSocket clients in both
+movement modes. `npm run check:inventory` exercises the real inventory UI in
+Chromium without requiring a GPU and saves health/crafting screenshots under
+`artifacts/`. `npm run check:network-worker` checks real worker crafting, private
+inventory updates, pack moves, and preservation through a simulated outage.

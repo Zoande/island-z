@@ -1,4 +1,5 @@
 import {objectRegistry} from './object-registry';
+import {primitiveDistance} from './volume';
 import type {SolidPrimitive,SolidSource} from './volume';
 
 export type Resource='wood'|'dirt'|'sand'|'stone';
@@ -41,6 +42,11 @@ export function addItems(inv:InventoryState,item:string,count:number):InventoryS
  for(let i=0;i<slots.length&&left;i++)if(slots[i]===null){const n=Math.min(left,INVENTORY_STACK);slots[i]={item,count:n};left-=n;}
  return left?null:{revision:inv.revision+1,slots};
 }
+/** Harvesting fills the remaining room; crafting still requires the whole output to fit. */
+export function collectResource(inv:InventoryState,item:Resource,count:number):InventoryState|null {
+ const room=inv.slots.reduce((n,s)=>n+(s===null?INVENTORY_STACK:s.item===item?INVENTORY_STACK-s.count:0),0);
+ return room>0?addItems(inv,item,Math.min(room,count)):null;
+}
 export function consumeItem(inv:InventoryState,item:string,count:number):InventoryState|null {
  if(!Number.isSafeInteger(count)||count<=0||countItem(inv,item)<count)return null;const slots=inv.slots.map(s=>s&&({...s}));let left=count;
  for(let i=0;i<slots.length&&left;i++)if(slots[i]?.item===item){const n=Math.min(left,slots[i]!.count);slots[i]!.count-=n;left-=n;if(!slots[i]!.count)slots[i]=null;}
@@ -69,6 +75,9 @@ export function resourceYield(prop:{kind:string;x?:number;y?:number;z?:number},s
   if(point&&terrain&&Number.isFinite(prop.x)&&Number.isFinite(prop.z)){
    const u=Math.max(0,Math.min(terrain.grid-1e-8,(point[0]-prop.x!-terrain.bounds[0][0])/terrain.spacing)),v=Math.max(0,Math.min(terrain.grid-1e-8,(point[2]-prop.z!-terrain.bounds[0][2])/terrain.spacing)),x=Math.floor(u),z=Math.floor(v),f=u-x,g=v-z,n=terrain.grid+1;
    const ids=f+g<=1?[z*n+x,z*n+x+1,(z+1)*n+x]:[z*n+x+1,(z+1)*n+x+1,(z+1)*n+x],blend=f+g<=1?[1-f-g,f,g]:[1-g,f+g-1,1-f];avg=avg.map((_,i)=>ids.reduce((sum,id,j)=>sum+(weights[id]?.[i]??0)*blend[j],0));
+   // Match the rendered surface skin and the exposed stone beneath it.
+   const local=point.map((v,i)=>v-([prop.x,prop.y,prop.z][i]??0))as [number,number,number],depth=-primitiveDistance(local,terrain),rock=Math.max(0,Math.min(1,(depth-.12)/.12));
+   avg=avg.map((weight,i)=>(1-rock)*weight+(i===3?rock:0));
   }
   const dominant=avg.indexOf(Math.max(...avg));
   return dominant===0?{item:'sand',count:1}:dominant===3?{item:'stone',count:1}:{item:'dirt',count:1};
